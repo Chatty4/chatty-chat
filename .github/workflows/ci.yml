@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  ci:
+    uses: Chatty4/.github/.github/workflows/python-ci.yml@dev
+    with:
+      # Integration tests (tests/integration) need both, see CLAUDE.md.
+      needs-postgres: true
+      needs-redis: true
+      database-url-scheme: postgresql+asyncpg
+      test-env: |
+        CORE_SERVICE_TOKEN=ci-not-secret
+      # Migrations apply on an empty database, and models match the migrations.
+      pre-test-commands: |
+        alembic upgrade head
+        alembic check
