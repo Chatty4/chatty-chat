@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     DATABASE_URL: str
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = "redis://127.0.0.1:6379/0"
 
     CORE_SERVICE_TOKEN: SecretStr
     JWT_ALGORITHM: Literal["RS256"] = "RS256"

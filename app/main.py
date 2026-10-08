@@ -3,16 +3,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.router import api_router
 from app.api.routers import health
 from app.core.config import get_settings
-from app.db.session import engine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    app.state.redis = Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+    settings = get_settings()
+    engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True, echo=settings.DEBUG)
+    app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
         yield
     finally:

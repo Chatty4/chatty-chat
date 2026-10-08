@@ -1,13 +1,14 @@
 import os
 
-# Settings needs these to import the app. Real values (from docker compose or .env) win.
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import create_app
+
+# Fallback values for environments without a .env (e.g. unit-test runs without Docker).
+# Real values from docker compose or .env take precedence because setdefault only fills gaps.
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@127.0.0.1:5432/test")
 os.environ.setdefault("CORE_SERVICE_TOKEN", "test-token")
-
-import pytest  # noqa: E402
-from httpx import ASGITransport, AsyncClient  # noqa: E402
-
-from app.main import create_app  # noqa: E402
 
 
 @pytest.fixture
