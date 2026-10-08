@@ -1,6 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
@@ -112,10 +112,26 @@ async def test_service_unavailable(app, client):
     assert r.json()["error"]["code"] == "core_unavailable"
 
 
+# --- HTTPException (routing 404 / 405) ---
+
+
+async def test_unknown_route_returns_not_found_in_contract_shape(app, client):
+    r = await client.get("/api/chat/v1/does-not-exist")
+    assert r.status_code == 404
+    assert r.json() == {"error": {"code": "not_found", "message": "Not Found"}}
+
+
+async def test_wrong_method_returns_method_not_allowed_in_contract_shape(app, client):
+    # health is GET-only; POST should get 405
+    r = await client.post("/health")
+    assert r.status_code == 405
+    assert r.json()["error"]["code"] == "method_not_allowed"
+
+
 # --- RequestValidationError ---
 
 
-async def test_request_validation_error_returns_400_with_fields(app, client):
+async def test_request_validation_error_returns_400_with_short_codes(app, client):
     class Body(BaseModel):
         text: str
         count: int
@@ -128,20 +144,48 @@ async def test_request_validation_error_returns_400_with_fields(app, client):
     assert r.status_code == 400
     body = r.json()["error"]
     assert body["code"] == "validation_error"
-    assert "count" in body["fields"]
+    assert body["fields"]["count"] == "required"
 
 
-async def test_request_validation_error_omits_fields_when_no_body(app, client):
-    r = await client.post("/api/chat/v1/nonexistent", json=None)
-    # 404 from FastAPI itself, but we confirm the error shape is contract-compliant
-    assert r.status_code == 404
+async def test_request_validation_too_long_maps_to_too_long(app, client):
+    class Body(BaseModel):
+        name: str = Field(max_length=3)
+
+    @app.post("/_validate_len")
+    async def _validate_len(body: Body):
+        return body
+
+    r = await client.post("/_validate_len", json={"name": "toolong"})
+    assert r.status_code == 400
+    assert r.json()["error"]["fields"]["name"] == "too_long"
 
 
-# --- Unhandled Exception catch-all ---
-#
-# Starlette's ServerErrorMiddleware always re-raises after calling the handler so
-# that test clients can inspect the exception. ASGITransport(raise_app_exceptions=False)
-# suppresses that re-raise and lets us assert on the 500 response instead.
+async def test_request_validation_nested_path_is_preserved(app, client):
+    class Address(BaseModel):
+        city: str
+
+    class Body(BaseModel):
+        address: Address
+
+    @app.post("/_validate_nested")
+    async def _validate_nested(body: Body):
+        return body
+
+    r = await client.post("/_validate_nested", json={"address": {}})
+    assert r.status_code == 400
+    assert "address.city" in r.json()["error"]["fields"]
+
+
+async def test_request_validation_message_is_always_invalid_request(app, client):
+    class Body(BaseModel):
+        x: int
+
+    @app.post("/_validate_msg")
+    async def _validate_msg(body: Body):
+        return body
+
+    r = await client.post("/_validate_msg", json={})
+    assert r.json()["error"]["message"] == "Invalid request."
 
 
 @pytest.fixture
@@ -153,19 +197,25 @@ async def silent_client(app):
         yield c
 
 
-async def test_unhandled_exception_returns_500_with_request_id(app, silent_client):
+async def test_unhandled_exception_returns_500_with_request_id_field(app, silent_client):
     make_raise_route(app, RuntimeError("something broke"))
     r = await silent_client.get("/_raise")
     assert r.status_code == 500
     body = r.json()["error"]
     assert body["code"] == "internal_error"
-    assert "request_id=" in body["message"]
+    assert "request_id" in body
+    assert "something broke" not in r.text
 
 
-async def test_unhandled_exception_includes_uuid_in_request_id(app, silent_client):
+async def test_unhandled_exception_request_id_is_hex(app, silent_client):
     make_raise_route(app, ValueError("unexpected"))
     r = await silent_client.get("/_raise")
-    message = r.json()["error"]["message"]
-    request_id = message.split("request_id=")[-1]
-    assert len(request_id) == 36
-    assert request_id.count("-") == 4
+    request_id = r.json()["error"]["request_id"]
+    assert len(request_id) == 32
+    assert all(c in "0123456789abcdef" for c in request_id)
+
+
+async def test_unhandled_exception_does_not_leak_details(app, silent_client):
+    make_raise_route(app, RuntimeError("secret detail"))
+    r = await silent_client.get("/_raise")
+    assert "secret detail" not in r.text
