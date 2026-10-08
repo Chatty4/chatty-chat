@@ -25,6 +25,7 @@ def make_raise_route(app, exc: Exception) -> None:
 
 # --- AppError subclasses ---
 
+
 async def test_bad_request(app, client):
     make_raise_route(app, BadRequest(ErrorCode.INVALID_FILE, "file is not ready"))
     r = await client.get("/_raise")
@@ -113,6 +114,7 @@ async def test_service_unavailable(app, client):
 
 # --- RequestValidationError ---
 
+
 async def test_request_validation_error_returns_400_with_fields(app, client):
     class Body(BaseModel):
         text: str
@@ -140,6 +142,7 @@ async def test_request_validation_error_omits_fields_when_no_body(app, client):
 # Starlette's ServerErrorMiddleware always re-raises after calling the handler so
 # that test clients can inspect the exception. ASGITransport(raise_app_exceptions=False)
 # suppresses that re-raise and lets us assert on the 500 response instead.
+
 
 @pytest.fixture
 async def silent_client(app):
