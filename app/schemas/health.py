@@ -17,9 +17,3 @@ class HealthResponse(BaseModel):
     status: HealthStatus
     db: CheckStatus
     redis: CheckStatus
-
-
-class DatabaseHealthResponse(BaseModel):
-    status: CheckStatus
-    database: str | None = None
-    error: str | None = None

@@ -9,12 +9,13 @@ from app.api.error_handlers import register_exception_handlers
 from app.api.router import api_router
 from app.api.routers import health
 from app.core.config import get_settings
+from app.core.logging import setup_logging
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = get_settings()
-    engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True, echo=settings.DEBUG)
+    engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
     app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
@@ -25,6 +26,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 
 def create_app() -> FastAPI:
+    settings = get_settings()
+    setup_logging(settings.LOG_LEVEL, settings.SQL_ECHO)
     app = FastAPI(title="chatty-chat", version="0.1.0", lifespan=lifespan)
     register_exception_handlers(app)
     app.include_router(health.router)

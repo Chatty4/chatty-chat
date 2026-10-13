@@ -1,21 +1,13 @@
 from app.api.deps import get_health_service
-from app.schemas.health import CheckStatus, DatabaseHealthResponse, HealthResponse, HealthStatus
+from app.schemas.health import CheckStatus, HealthResponse, HealthStatus
 
 
 class FakeHealthService:
-    def __init__(
-        self,
-        health: HealthResponse | None = None,
-        database: DatabaseHealthResponse | None = None,
-    ) -> None:
+    def __init__(self, health: HealthResponse) -> None:
         self._health = health
-        self._database = database
 
     async def check(self) -> HealthResponse:
         return self._health
-
-    async def check_database(self) -> DatabaseHealthResponse:
-        return self._database
 
 
 def use_fake(app, **results) -> None:
@@ -48,26 +40,8 @@ async def test_health_returns_503_when_db_is_down(app, client):
     assert response.json() == {"status": "degraded", "db": "error", "redis": "ok"}
 
 
-async def test_health_db_returns_database_name(app, client):
-    use_fake(app, database=DatabaseHealthResponse(status=CheckStatus.OK, database="chat_db"))
-
+async def test_health_db_endpoint_is_gone(app, client):
+    # /health/db returned the database name and exception class to anyone (CHAT-243).
     response = await client.get("/health/db")
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "database": "chat_db", "error": None}
-
-
-async def test_health_db_returns_503_with_error_type(app, client):
-    use_fake(
-        app,
-        database=DatabaseHealthResponse(status=CheckStatus.ERROR, error="ConnectionRefusedError"),
-    )
-
-    response = await client.get("/health/db")
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "status": "error",
-        "database": None,
-        "error": "ConnectionRefusedError",
-    }
+    assert response.status_code == 404

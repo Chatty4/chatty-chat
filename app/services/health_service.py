@@ -1,13 +1,16 @@
 import asyncio
+import logging
 
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.health import CheckStatus, DatabaseHealthResponse, HealthResponse, HealthStatus
+from app.schemas.health import CheckStatus, HealthResponse, HealthStatus
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 2
-DB_INFO_QUERY = text("SELECT current_database()")
+PING_QUERY = text("SELECT 1")
 
 
 class HealthService:
@@ -16,24 +19,27 @@ class HealthService:
         self._redis = redis
 
     async def check(self) -> HealthResponse:
-        db, redis = await asyncio.gather(self.check_database(), self._check_redis())
-        healthy = db.status is CheckStatus.OK and redis is CheckStatus.OK
+        db, redis = await asyncio.gather(self._check_database(), self._check_redis())
+        healthy = db is CheckStatus.OK and redis is CheckStatus.OK
         return HealthResponse(
             status=HealthStatus.OK if healthy else HealthStatus.DEGRADED,
-            db=db.status,
+            db=db,
             redis=redis,
         )
 
-    async def check_database(self) -> DatabaseHealthResponse:
+    async def _check_database(self) -> CheckStatus:
         try:
-            result = await asyncio.wait_for(self._session.execute(DB_INFO_QUERY), TIMEOUT_SECONDS)
-        except Exception as exc:
-            return DatabaseHealthResponse(status=CheckStatus.ERROR, error=type(exc).__name__)
-        return DatabaseHealthResponse(status=CheckStatus.OK, database=result.scalar_one())
+            await asyncio.wait_for(self._session.execute(PING_QUERY), TIMEOUT_SECONDS)
+        except Exception:
+            # The details go to the log only; the response just says "error".
+            logger.warning("Health check failed: db", exc_info=True)
+            return CheckStatus.ERROR
+        return CheckStatus.OK
 
     async def _check_redis(self) -> CheckStatus:
         try:
             await asyncio.wait_for(self._redis.ping(), TIMEOUT_SECONDS)
         except Exception:
+            logger.warning("Health check failed: redis", exc_info=True)
             return CheckStatus.ERROR
         return CheckStatus.OK
