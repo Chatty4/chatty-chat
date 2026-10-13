@@ -1,7 +1,7 @@
 # chatty-chat
 
 FastAPI service for Chatty: messages, sync, reactions, pins, read state, attachments and the WebSocket gateway.
-Public API at `/api/chat/v1`, health at `/health` and `/health/db`.
+Public API at `/api/chat/v1`, health at `/health`.
 
 Stack: Python 3.14, FastAPI, SQLAlchemy 2.1 (async, asyncpg), Alembic, Redis (`redis.asyncio`), pydantic-settings,
 Postgres 17, uvicorn. Later: Kafka (`aiokafka`), MinIO (read-only, attachment downloads).

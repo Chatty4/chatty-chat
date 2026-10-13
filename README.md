@@ -5,7 +5,7 @@ FastAPI service for Chatty: messages, sync, reactions, pins, read state, attachm
 - Public API: `/api/chat/v1` (contract: `chatty-infra/docs/api-chat.md`)
 - Events on the WebSocket and Kafka: `chatty-infra/docs/events.md`
 - Calls chatty-core's internal API (contract: `chatty-infra/docs/api-internal.md`) and listens to its Redis events (`chatty-infra/docs/core-events.md`)
-- Health checks: `GET /health` (database and Redis) and `GET /health/db` (database only)
+- Health check: `GET /health` (database and Redis)
 
 Stack: Python 3.14, FastAPI, SQLAlchemy 2.1 (async, asyncpg), Alembic, Redis, pydantic-settings, Postgres 17, uvicorn.
 
@@ -63,11 +63,10 @@ uvicorn app.main:app --reload --port 8001
 | URL | Expected |
 |---|---|
 | http://127.0.0.1:8001/health | `{"status": "ok", "db": "ok", "redis": "ok"}` |
-| http://127.0.0.1:8001/health/db | `{"status": "ok", "database": "chat_db", "error": null}` |
 | http://127.0.0.1:8001/docs | API docs |
 
 A `503` means the database or Redis is not reachable: check that the infra containers are running and the URLs
-in `.env`.
+in `.env`. The reason is in the chat logs ("Health check failed: ..."), not in the response.
 
 ## Commands
 

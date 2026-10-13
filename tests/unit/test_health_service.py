@@ -1,24 +1,16 @@
+import logging
+
 from app.schemas.health import CheckStatus, HealthStatus
 from app.services.health_service import HealthService
 
 
-class FakeResult:
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def scalar_one(self) -> str:
-        return self._value
-
-
 class FakeSession:
-    def __init__(self, database: str = "chat_db", error: Exception | None = None) -> None:
-        self._database = database
+    def __init__(self, error: Exception | None = None) -> None:
         self._error = error
 
-    async def execute(self, statement):
+    async def execute(self, statement) -> None:
         if self._error:
             raise self._error
-        return FakeResult(self._database)
 
 
 class FakeRedis:
@@ -59,19 +51,12 @@ async def test_check_is_degraded_when_redis_fails():
     assert result.redis is CheckStatus.ERROR
 
 
-async def test_check_database_returns_the_database_name():
-    result = await HealthService(FakeSession(database="chat_db"), FakeRedis()).check_database()
-
-    assert result.status is CheckStatus.OK
-    assert result.database == "chat_db"
-    assert result.error is None
-
-
-async def test_check_database_returns_only_the_error_type():
+async def test_check_logs_the_error_instead_of_returning_it(caplog):
     session = FakeSession(error=ConnectionRefusedError("secret host details"))
 
-    result = await HealthService(session, FakeRedis()).check_database()
+    with caplog.at_level(logging.WARNING):
+        result = await HealthService(session, FakeRedis()).check()
 
-    assert result.status is CheckStatus.ERROR
-    assert result.database is None
-    assert result.error == "ConnectionRefusedError"
+    assert "secret host details" not in result.model_dump_json()
+    assert "Health check failed: db" in caplog.text
+    assert "secret host details" in caplog.text
