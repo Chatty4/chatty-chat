@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: Literal["RS256"] = "RS256"
     JWT_PUBLIC_KEY_PATH: Path = Path("keys/jwt_public.pem")
 
-    DEBUG: bool = False
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Logs every SQL statement with its parameters (message bodies too). Local debugging only.
+    SQL_ECHO: bool = False
 
     def read_jwt_public_key(self) -> str:
         return self.JWT_PUBLIC_KEY_PATH.read_text(encoding="utf-8")
