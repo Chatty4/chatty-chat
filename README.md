@@ -105,10 +105,16 @@ docker run --rm -p 8001:8001 --network chatty_default \
   -e REDIS_URL=redis://redis:6379/0 \
   -e CORE_SERVICE_TOKEN=change-me \
   -e CORE_INTERNAL_URL=http://chatty-core:8000 \
+  -e JWT_PUBLIC_KEY_PATH=/keys/jwt_public.pem \
+  -v "$(pwd)/keys/jwt_public.pem:/keys/jwt_public.pem:ro" \
   chatty-chat
 ```
 
-The container joins the infra network (`chatty_default`), so it reaches Postgres as `chat-db` and Redis as `redis`.
+The container joins the infra network (`chatty_default`), so it reaches Postgres as `chat-db`, Redis as `redis`
+and chatty-core as `chatty-core`. The image has no keys; the public key is mounted read-only, as compose does.
+
+- The infra must be running (`chat-db`, `redis`, `core`). Compose's `chat` already uses port 8001: stop it, or use `-p 8002:8001`.
+- Git Bash on Windows: put `MSYS_NO_PATHCONV=1` before `docker run` and use `$(pwd -W)`, or the key path is rewritten.
 
 ## Contributing
 
