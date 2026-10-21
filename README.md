@@ -29,7 +29,7 @@ Use Docker if Windows blocks compiled packages (`An Application Control policy h
 cp .env.example .env
 ```
 
-**Docker:** nothing else. `.env` is optional; compose sets `DATABASE_URL`, `REDIS_URL` and `CORE_SERVICE_TOKEN` itself.
+**Docker:** nothing else. `.env` is optional; compose sets `DATABASE_URL`, `REDIS_URL`, `CORE_SERVICE_TOKEN` and `CORE_INTERNAL_URL` itself.
 
 **Local:** create the virtual environment and point `.env` at the infra.
 
@@ -104,6 +104,7 @@ docker run --rm -p 8001:8001 --network chatty_default \
   -e DATABASE_URL=postgresql+asyncpg://chat_user:chat_pass@chat-db:5432/chat_db \
   -e REDIS_URL=redis://redis:6379/0 \
   -e CORE_SERVICE_TOKEN=change-me \
+  -e CORE_INTERNAL_URL=http://chatty-core:8000 \
   chatty-chat
 ```
 
