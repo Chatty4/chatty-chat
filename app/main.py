@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -18,9 +19,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
     app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    app.state.core_http = httpx.AsyncClient(
+        base_url=settings.CORE_INTERNAL_URL,
+        headers={"X-Service-Token": settings.CORE_SERVICE_TOKEN.get_secret_value()},
+        timeout=2.0,
+    )
     try:
         yield
     finally:
+        await app.state.core_http.aclose()
         await app.state.redis.aclose()
         await engine.dispose()
 
