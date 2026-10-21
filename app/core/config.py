@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
 
+    CORE_INTERNAL_URL: str = "http://127.0.0.1:8000"
+
     CORE_SERVICE_TOKEN: SecretStr
     JWT_ALGORITHM: Literal["RS256"] = "RS256"
     JWT_PUBLIC_KEY_PATH: Path = Path("keys/jwt_public.pem")
@@ -30,4 +32,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore : filled from .env
