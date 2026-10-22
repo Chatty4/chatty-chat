@@ -49,7 +49,7 @@ async def get_current_user(
 ) -> Memberships:
     if credentials is None:
         raise Unauthorized()
-    return await access.get_user(decode_access_token(credentials.credentials))
+    return await access.get_user(decode_access_token(credentials.credentials).user_id)
 
 
 CurrentUser = Annotated[Memberships, Depends(get_current_user)]
