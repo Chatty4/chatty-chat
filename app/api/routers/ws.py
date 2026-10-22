@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.deps import AccessServiceDep, ConnectionsDep, EventBusDep
