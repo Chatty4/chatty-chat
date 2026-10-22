@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         timeout=2.0,
     )
     events_redis = Redis.from_url(
-        settings.REDIS_URL, decore_responses=True, retry=Retry(NoBackoff(), 0)
+        settings.REDIS_URL, decode_responses=True, retry=Retry(NoBackoff(), 0)
     )
     events_task = asyncio.create_task(listen_core_events(events_redis))
     try:
