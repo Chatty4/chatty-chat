@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -6,7 +7,9 @@ import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_connections, get_core_client
+from app.api.deps import get_connections, get_core_client, get_event_bus
+from app.schemas.core import Memberships
+from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
 from tests.fakes import FakeCore, memberships
 
@@ -33,9 +36,56 @@ def registry(app) -> RecordingRegistry:
     return registry
 
 
+class FakeBus:
+    """Yields the given events, then stays subscribed like Redis does."""
+
+    def __init__(self, *events: ChannelEvent) -> None:
+        self.events = events
+        self.calls: list[list[uuid.UUID]] = []
+
+    def subscribe(self, channel_ids: list[uuid.UUID]):
+        self.calls.append(channel_ids)
+        return self._stream()
+
+    async def _stream(self):
+        for event in self.events:
+            yield event
+        await asyncio.Event().wait()
+
+
 @pytest.fixture
-def ws_client(app, registry) -> TestClient:
+def bus(app) -> FakeBus:
+    # Without it get_event_bus reads app.state.redis, which TestClient never sets (no lifespan).
+    bus = FakeBus()
+    app.dependency_overrides[get_event_bus] = lambda: bus
+    return bus
+
+
+@pytest.fixture
+def ws_client(app, registry, bus) -> TestClient:
     return TestClient(app)
+
+
+def member_of(channel_id: uuid.UUID) -> Memberships:
+    return Memberships.model_validate(
+        {
+            "user_id": str(USER_ID),
+            "is_active": True,
+            "teams": [],
+            "channels": [
+                {
+                    "channel_id": str(channel_id),
+                    "team_id": str(uuid.uuid4()),
+                    "kind": "public",
+                    "archived": False,
+                    "role": "member",
+                    "notify_level": "all",
+                    "muted": False,
+                    "hidden": False,
+                }
+            ],
+        }
+    )
 
 
 def use_core(app, core: FakeCore) -> None:
@@ -78,3 +128,34 @@ def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_tok
     token = make_token(sub=str(USER_ID), exp=datetime.now(UTC) + timedelta(seconds=2))
 
     assert close_code(ws_client, f"{URL}?token={token}") == 4001
+
+
+def test_channel_events_are_forwarded_to_the_socket(app, ws_client, make_token):
+    channel_id = uuid.uuid4()
+    event = ChannelEvent(
+        type="message.created",
+        channel_id=channel_id,
+        seq=1,
+        created_at=datetime.now(UTC),
+        payload={},
+    )
+    bus = FakeBus(event)
+    app.dependency_overrides[get_event_bus] = lambda: bus
+    use_core(app, FakeCore(memberships=member_of(channel_id)))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
+        assert ws.receive_json() == {"type": "event", "event": event.model_dump(mode="json")}
+
+    assert bus.calls == [[channel_id]]
+
+
+def test_user_without_channels_is_not_subscribed(app, ws_client, registry, bus, make_token):
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+
+    # subscribe() would run before connections.add(), so once added is set it never will
+    with ws_client.websocket_connect(f"{URL}?token={token}"):
+        assert registry.added.wait(timeout=2)
+
+    assert bus.calls == []
