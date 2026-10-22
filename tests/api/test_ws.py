@@ -98,6 +98,7 @@ def close_code(client: TestClient, url: str) -> int:
     return closed.value.code
 
 
+@pytest.mark.usefixtures("make_token")  # swaps in the test public key; CI has no keys/ file
 @pytest.mark.parametrize("query", ["", "?token=not-a-jwt"], ids=["no token", "bad token"])
 def test_missing_or_bad_token_closes_with_4001(app, ws_client, query):
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
