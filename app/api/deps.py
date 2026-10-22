@@ -11,6 +11,7 @@ from app.core.security import decode_access_token
 from app.db.session import get_session
 from app.schemas.core import Memberships
 from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
 from app.services.health_service import HealthService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -52,3 +53,10 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[Memberships, Depends(get_current_user)]
+
+
+def get_event_bus(redis: RedisDep) -> EventBus:
+    return EventBus(redis)
+
+
+EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
