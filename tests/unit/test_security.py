@@ -7,10 +7,14 @@ from app.core.exceptions import Unauthorized
 from app.core.security import decode_access_token
 
 
-def test_valid_token_returns_the_user_id(make_token):
+def test_valid_token_returns_the_user_id_and_exp(make_token):
     user_id = uuid.uuid4()
+    exp = datetime.now(UTC) + timedelta(minutes=5)
 
-    assert decode_access_token(make_token(sub=str(user_id))) == user_id
+    token = decode_access_token(make_token(sub=str(user_id), exp=exp))
+
+    assert token.user_id == user_id
+    assert token.expires_at == int(exp.timestamp())
 
 
 @pytest.mark.parametrize(

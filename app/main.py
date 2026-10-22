@@ -15,6 +15,7 @@ from app.api.routers import health
 from app.clients.core_events import listen_core_events
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.services.connection_registry import ConnectionRegistry
 
 
 @asynccontextmanager
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         headers={"X-Service-Token": settings.CORE_SERVICE_TOKEN.get_secret_value()},
         timeout=2.0,
     )
+    app.state.connections = ConnectionRegistry()
     events_redis = Redis.from_url(
         settings.REDIS_URL, decode_responses=True, retry=Retry(NoBackoff(), 0)
     )
