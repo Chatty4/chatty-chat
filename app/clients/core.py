@@ -22,8 +22,9 @@ def members_key(user_id: uuid.UUID) -> str:
 def channel_key(channel_id: uuid.UUID) -> str:
     return f"channel:{channel_id}"
 
-MEMBERS_KEYS = members_key("*") # type: ignore[arg-type]
-CHANNEL_KEYS = channel_key("*") # type: ignore[arg-type]
+
+MEMBERS_KEYS = members_key("*")  # type: ignore[arg-type]
+CHANNEL_KEYS = channel_key("*")  # type: ignore[arg-type]
 
 
 class CoreClient:
