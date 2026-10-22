@@ -55,7 +55,7 @@ async def listen_core_events(redis: Redis) -> None:
     backoff = 1
     while True:
         try:
-            async with redis.pubsub() as pubsub:
+            async with redis.pubsub() as pubsub:  # type: ignore
                 await pubsub.subscribe(CORE_EVENTS)
                 # clear after subscribing, so no event can slip in between
                 await clear_cache(redis)

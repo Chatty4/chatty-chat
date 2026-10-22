@@ -1,14 +1,18 @@
+import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 from fastapi import FastAPI
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.error_handlers import register_exception_handlers
 from app.api.router import api_router
 from app.api.routers import health
+from app.clients.core_events import listen_core_events
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 
@@ -24,9 +28,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         headers={"X-Service-Token": settings.CORE_SERVICE_TOKEN.get_secret_value()},
         timeout=2.0,
     )
+    events_redis = Redis.from_url(
+        settings.REDIS_URL, decore_responses=True, retry=Retry(NoBackoff(), 0)
+    )
+    events_task = asyncio.create_task(listen_core_events(events_redis))
     try:
         yield
     finally:
+        events_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await events_task
+        await events_redis.aclose()
         await app.state.core_http.aclose()
         await app.state.redis.aclose()
         await engine.dispose()
