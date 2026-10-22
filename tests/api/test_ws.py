@@ -1,5 +1,6 @@
 import threading
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -70,3 +71,10 @@ def test_socket_is_registered_while_open_and_removed_after(app, ws_client, regis
         assert len(registry.sockets(USER_ID)) == 1
 
     assert registry.sockets(USER_ID) == set()
+
+
+def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_token):
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID), exp=datetime.now(UTC) + timedelta(seconds=2))
+
+    assert close_code(ws_client, f"{URL}?token={token}") == 4001

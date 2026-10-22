@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.api.deps import AccessServiceDep, ConnectionsDep
@@ -32,8 +35,11 @@ async def websocket_endpoint(
 
     connections.add(user.user_id, websocket)
     try:
-        while True:
-            await websocket.receive_text()  # CHAT-184 and CHAT-185 handle the messages
+        async with asyncio.timeout(claims.expires_at - time.time()):
+            while True:
+                await websocket.receive_text()  # CHAT-184 and CHAT-185 handle the messages
+    except TimeoutError:
+        await websocket.close(TOKEN_EXPIRED, "token_expired")
     except WebSocketDisconnect:
         pass
     finally:
