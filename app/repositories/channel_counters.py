@@ -13,8 +13,8 @@ class ChannelCounterRepository:
     async def next_seq(self, channel_id: uuid.UUID) -> int:
         """
         The channel's next seq. The upsert locks the counter row until the transaction ends,
-        so seqs of one channel are handed out in the order and it creates the row for the first
-        message of the channel.
+        so seqs of one channel are handed out in order. It also creates the row for the channel's
+        first message.
         """
         stmt = (
             insert(ChannelCounter)

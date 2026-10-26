@@ -14,7 +14,7 @@ class ReadStateRepository:
     async def advance_read_position(
         self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
     ) -> None:
-        """Move the user's read postion to seq. It only moves forward."""
+        """Move the user's read position to seq. It only moves forward."""
         stmt = insert(ReadState).values(user_id=user_id, channel_id=channel_id, last_read_seq=seq)
         stmt = stmt.on_conflict_do_update(
             index_elements=[ReadState.user_id, ReadState.channel_id],
@@ -25,5 +25,5 @@ class ReadStateRepository:
                 "updated_at": func.now(),
             },
         )
-        
+
         await self._session.execute(stmt)
