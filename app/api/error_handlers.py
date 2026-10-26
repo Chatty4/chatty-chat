@@ -14,6 +14,7 @@ _PYDANTIC_CODES: dict[str, str] = {
     "missing": "required",
     "string_too_long": "too_long",
     "string_too_short": "too_short",
+    "too_long": "too_long",
 }
 _PARAM_SOURCES = frozenset({"body", "query", "path", "header", "cookie"})
 _HTTP_CODES: dict[int, str] = {404: "not_found", 405: "method_not_allowed"}
