@@ -2,12 +2,14 @@ import asyncio
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_connections, get_core_client, get_event_bus
+from app.api.routers.ws import handle_message
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
@@ -160,3 +162,49 @@ def test_user_without_channels_is_not_subscribed(app, ws_client, registry, bus, 
         assert registry.added.wait(timeout=2)
 
     assert bus.calls == []
+
+
+def fake_socket() -> SimpleNamespace:
+    """handle_message only touches websocket.state."""
+    return SimpleNamespace(state=SimpleNamespace())
+
+
+async def test_heartbeat_stores_visible_and_last_heartbeat_at():
+    socket = fake_socket()
+    before = asyncio.get_running_loop().time()
+
+    assert await handle_message(socket, '{"type": "heartbeat", "visible": false}') is True
+
+    assert socket.state.visible is False
+    assert socket.state.last_heartbeat_at >= before
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        '"heartbeat"',
+        "[1, 2]",
+        "null",
+        '{"type": "typing", "channel_id": "42aa"}',
+        '{"type": "heartbeat", "visible": "yes"}',
+        '{"type": "heartbeat", "visible": 1}',
+        '{"type": "heartbeat"}',
+    ],
+    ids=[
+        "invalid json",
+        "string",
+        "array",
+        "null",
+        "unknown type",
+        "string visible",
+        "int visible",
+        "missing visible",
+    ],
+)
+async def test_invalid_messages_are_ignored(raw):
+    socket = fake_socket()
+
+    assert await handle_message(socket, raw) is False
+
+    assert vars(socket.state) == {}

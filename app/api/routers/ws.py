@@ -3,11 +3,13 @@ import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
 from app.api.deps import AccessServiceDep, ConnectionsDep, EventBusDep
 from app.core.exceptions import Unauthorized, UserInactive
 from app.core.security import decode_access_token
 from app.schemas.events import ChannelEvent
+from app.schemas.ws import Heartbeat
 
 router = APIRouter()
 
@@ -21,6 +23,17 @@ async def forward_events(websocket: WebSocket, events: AsyncGenerator[ChannelEve
     # close it with 1011 instead once CHAT-185 owns the subscription.
     async for event in events:
         await websocket.send_json({"type": "event", "event": event.model_dump(mode="json")})
+
+
+async def handle_message(websocket: WebSocket, raw: str) -> bool:
+    """Returns True for a valid heartbeat. CHAT-215 refreshes the presence key here."""
+    try:
+        heartbeat = Heartbeat.model_validate_json(raw)
+    except ValidationError:
+        return False  # invalid JSON, not an object, unknown type, bad field: ignored
+    websocket.state.visible = heartbeat.visible
+    websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
+    return True
 
 
 @router.websocket("/ws")
