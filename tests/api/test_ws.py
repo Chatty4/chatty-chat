@@ -4,17 +4,18 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_connections, get_core_client, get_event_bus
+from app.api.deps import get_core_client, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
 from app.schemas.core import Memberships
-from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
+from app.services.gateway import Gateway
 from tests.fakes import FakeCore, memberships
 
 USER_ID = uuid.uuid4()
@@ -35,39 +36,21 @@ class RecordingRegistry(ConnectionRegistry):
 
 
 @pytest.fixture
-def registry(app) -> RecordingRegistry:
-    registry = RecordingRegistry()
-    app.dependency_overrides[get_connections] = lambda: registry
-    return registry
-
-
-class FakeBus:
-    """Yields the given events, then stays subscribed like Redis does."""
-
-    def __init__(self, *events: ChannelEvent) -> None:
-        self.events = events
-        self.calls: list[list[uuid.UUID]] = []
-
-    def subscribe(self, channel_ids: list[uuid.UUID]):
-        self.calls.append(channel_ids)
-        return self._stream()
-
-    async def _stream(self):
-        for event in self.events:
-            yield event
-        await asyncio.Event().wait()
+def registry() -> RecordingRegistry:
+    return RecordingRegistry()
 
 
 @pytest.fixture
-def bus(app) -> FakeBus:
-    # Without it get_event_bus reads app.state.redis, which TestClient never sets (no lifespan).
-    bus = FakeBus()
-    app.dependency_overrides[get_event_bus] = lambda: bus
-    return bus
+def gateway(app, registry) -> Gateway:
+    # Without it get_gateway reads app.state.gateway, which TestClient never sets (no lifespan).
+    # run() never starts either, so the gateway never touches Redis.
+    gateway = Gateway(MagicMock(), registry)
+    app.dependency_overrides[get_gateway] = lambda: gateway
+    return gateway
 
 
 @pytest.fixture
-def ws_client(app, registry, bus) -> TestClient:
+def ws_client(app, gateway) -> TestClient:
     return TestClient(app)
 
 
@@ -136,35 +119,21 @@ def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_tok
     assert close_code(ws_client, f"{URL}?token={token}") == 4001
 
 
-def test_channel_events_are_forwarded_to_the_socket(app, ws_client, make_token):
+def test_socket_joins_its_channels_and_leaves_them_after(app, ws_client, registry, make_token):
     channel_id = uuid.uuid4()
-    event = ChannelEvent(
-        type="message.created",
-        channel_id=channel_id,
-        seq=1,
-        created_at=datetime.now(UTC),
-        payload={},
-    )
-    bus = FakeBus(event)
-    app.dependency_overrides[get_event_bus] = lambda: bus
     use_core(app, FakeCore(memberships=member_of(channel_id)))
     token = make_token(sub=str(USER_ID))
 
-    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
-        assert ws.receive_json() == {"type": "event", "event": event.model_dump(mode="json")}
-
-    assert bus.calls == [[channel_id]]
-
-
-def test_user_without_channels_is_not_subscribed(app, ws_client, registry, bus, make_token):
-    use_core(app, FakeCore(memberships=memberships(USER_ID)))
-    token = make_token(sub=str(USER_ID))
-
-    # subscribe() would run before connections.add(), so once added is set it never will
     with ws_client.websocket_connect(f"{URL}?token={token}"):
         assert registry.added.wait(timeout=2)
+        # connect() runs add() before join(), so wait for the join too
+        for _ in range(20):
+            if registry.in_channel(channel_id):
+                break
+            time.sleep(0.05)
+        assert registry.in_channel(channel_id) == registry.sockets(USER_ID)
 
-    assert bus.calls == []
+    assert registry.in_channel(channel_id) == set()
 
 
 def test_socket_closes_with_4002_without_heartbeats(app, ws_client, make_token, monkeypatch):
