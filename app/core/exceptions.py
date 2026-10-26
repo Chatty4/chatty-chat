@@ -89,3 +89,7 @@ class ServiceUnavailable(AppError):
     status_code = 503
     code = ErrorCode.CORE_UNAVAILABLE
     message = "chatty-core could not be reached. Try again."
+
+
+class MessageAlreadySent(Exception):
+    """A message with the same (author_id, client_msg_id) exists. The service returns it instead."""

@@ -10,11 +10,18 @@ from app.clients.core import CoreClient
 from app.core.exceptions import Unauthorized
 from app.core.security import decode_access_token
 from app.db.session import get_session
+from app.repositories import (
+    ChannelCounterRepository,
+    ChannelEventRepository,
+    MessageRepository,
+    ReadStateRepository,
+)
 from app.schemas.core import Memberships
 from app.services.access_service import AccessService
 from app.services.connection_registry import ConnectionRegistry
 from app.services.event_bus import EventBus
 from app.services.health_service import HealthService
+from app.services.message_service import MessageService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -69,3 +76,20 @@ def get_connections(conn: HTTPConnection) -> ConnectionRegistry[WebSocket]:
 
 
 ConnectionsDep = Annotated[ConnectionRegistry[WebSocket], Depends(get_connections)]
+
+
+def get_message_service(
+    session: SessionDep, access: AccessServiceDep, bus: EventBusDep
+) -> MessageService:
+    return MessageService(
+        session,
+        MessageRepository(session),
+        ChannelCounterRepository(session),
+        ChannelEventRepository(session),
+        ReadStateRepository(session),
+        access,
+        bus,
+    )
+
+
+MessageServiceDep = Annotated[MessageService, Depends(get_message_service)]

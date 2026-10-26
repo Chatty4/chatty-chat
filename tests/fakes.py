@@ -1,6 +1,22 @@
 import uuid
+from datetime import UTC, datetime
+from types import TracebackType
+from typing import Any, cast
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.clients.core import CoreClient
+from app.models import Message
+from app.repositories import (
+    ChannelCounterRepository,
+    ChannelEventRepository,
+    MessageRepository,
+    ReadStateRepository,
+)
 from app.schemas.core import CoreChannel, Memberships, TeamMembership
+from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
+from app.services.message_service import MessageService
 
 
 def memberships(
@@ -47,3 +63,150 @@ class FakeCore:
         if self._error:
             raise self._error
         return self._channel
+
+
+def saved_message(
+    channel_id: uuid.UUID, author_id: uuid.UUID, client_msg_id: uuid.UUID, seq: int = 1
+) -> Message:
+    """A message as it comes back from the database."""
+    return Message(
+        id=uuid.uuid4(),
+        channel_id=channel_id,
+        author_id=author_id,
+        seq=seq,
+        client_msg_id=client_msg_id,
+        body="hi",
+        mentions=[],
+        edited_at=None,
+        deleted_at=None,
+        created_at=datetime.now(UTC),
+    )
+
+
+class _FakeTransaction:
+    def __init__(self, log: list[str]) -> None:
+        self._log = log
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
+        self._log.append("rollback" if exc_type else "commit")
+        return False
+
+
+class FakeSession:
+    """Only `begin()`, which writes commit or rollback to `log`."""
+
+    def __init__(self, log: list[str]) -> None:
+        self._log = log
+
+    def begin(self) -> _FakeTransaction:
+        return _FakeTransaction(self._log)
+
+
+class FakeMessages:
+    """
+    `existing` is what the retry lookup finds. With `insert_error`, insert_message raises it, as if
+    another request had saved `saved_meanwhile` between the lookup and the insert.
+    """
+
+    def __init__(
+        self,
+        existing: Message | None = None,
+        *,
+        insert_error: Exception | None = None,
+        saved_meanwhile: Message | None = None,
+    ) -> None:
+        self.existing = existing
+        self._insert_error = insert_error
+        self._saved_meanwhile = saved_meanwhile
+        self.inserted: list[Message] = []
+
+    async def get_by_client_msg_id(
+        self, author_id: uuid.UUID, client_msg_id: uuid.UUID
+    ) -> Message | None:
+        return self.existing
+
+    async def insert_message(self, **fields: Any) -> Message:
+        if self._insert_error is not None:
+            self.existing = self._saved_meanwhile
+            raise self._insert_error
+        message = Message(
+            id=uuid.uuid4(),
+            edited_at=None,
+            deleted_at=None,
+            created_at=datetime.now(UTC),
+            **fields,
+        )
+        self.inserted.append(message)
+        return message
+
+
+class FakeCounters:
+    def __init__(self, last_seq: int = 0) -> None:
+        self.last_seq = last_seq
+
+    async def next_seq(self, channel_id: uuid.UUID) -> int:
+        self.last_seq += 1
+        return self.last_seq
+
+
+class FakeChannelEvents:
+    def __init__(self) -> None:
+        self.rows: list[tuple[uuid.UUID, int, str, dict[str, Any]]] = []
+
+    async def insert_channel_event(
+        self, channel_id: uuid.UUID, seq: int, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        self.rows.append((channel_id, seq, event_type, payload))
+
+
+class FakeReadState:
+    def __init__(self) -> None:
+        self.positions: dict[tuple[uuid.UUID, uuid.UUID], int] = {}
+
+    async def advance_read_position(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
+    ) -> None:
+        key = (user_id, channel_id)
+        self.positions[key] = max(self.positions.get(key, 0), seq)
+
+
+class FakeBus:
+    """Records what was published, and writes "publish" to `log` to show when."""
+
+    def __init__(self, log: list[str] | None = None) -> None:
+        self._log = log if log is not None else []
+        self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
+
+    async def publish(self, channel_id: uuid.UUID, event: dict[str, Any]) -> None:
+        self._log.append("publish")
+        self.published.append((channel_id, event))
+
+
+class MessageFakes:
+    """A MessageService on fakes. `log` shows the order of commit, rollback and publish."""
+
+    def __init__(self, core: FakeCore, messages: FakeMessages | None = None) -> None:
+        self.log: list[str] = []
+        self.messages = messages or FakeMessages()
+        self.counters = FakeCounters()
+        self.events = FakeChannelEvents()
+        self.read_state = FakeReadState()
+        self.bus = FakeBus(self.log)
+        # The fakes only duck-type the real classes, so cast them for the type checker.
+        self.service = MessageService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(MessageRepository, self.messages),
+            cast(ChannelCounterRepository, self.counters),
+            cast(ChannelEventRepository, self.events),
+            cast(ReadStateRepository, self.read_state),
+            AccessService(cast(CoreClient, core)),
+            cast(EventBus, self.bus),
+        )
