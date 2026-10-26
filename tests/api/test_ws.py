@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_connections, get_core_client, get_event_bus
+from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent
@@ -17,6 +19,7 @@ from tests.fakes import FakeCore, memberships
 
 USER_ID = uuid.uuid4()
 URL = "/api/chat/v1/ws"
+HEARTBEAT = {"type": "heartbeat", "visible": True}
 
 
 class RecordingRegistry(ConnectionRegistry):
@@ -162,6 +165,54 @@ def test_user_without_channels_is_not_subscribed(app, ws_client, registry, bus, 
         assert registry.added.wait(timeout=2)
 
     assert bus.calls == []
+
+
+def test_socket_closes_with_4002_without_heartbeats(app, ws_client, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+
+    assert close_code(ws_client, f"{URL}?token={token}") == 4002
+
+
+def test_heartbeats_keep_the_socket_open(app, ws_client, registry, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
+        assert registry.added.wait(timeout=2)
+        for _ in range(10):  # 1 s, twice the timeout
+            ws.send_json(HEARTBEAT)
+            time.sleep(0.1)
+        # the server removes the socket in its finally, so a closed socket would be gone
+        assert len(registry.sockets(USER_ID)) == 1
+
+
+def test_token_expiring_first_still_closes_with_4001(app, ws_client, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID), exp=datetime.now(UTC) + timedelta(seconds=2))
+
+    assert close_code(ws_client, f"{URL}?token={token}") == 4001
+
+
+def test_only_heartbeat_resets_the_timer(app, ws_client, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+
+    with (
+        ws_client.websocket_connect(f"{URL}?token={token}") as ws,
+        pytest.raises(WebSocketDisconnect) as closed,
+    ):
+        for _ in range(10):  # ignored frames for 1 s: the socket isn't closed for them
+            ws.send_text("not json")
+            ws.send_json({"type": "typing", "channel_id": str(uuid.uuid4())})
+            time.sleep(0.1)
+        ws.receive_text()
+
+    assert closed.value.code == 4002
 
 
 def fake_socket() -> SimpleNamespace:

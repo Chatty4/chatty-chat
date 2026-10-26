@@ -15,7 +15,10 @@ router = APIRouter()
 
 # api-chat.md, GET /ws, close codes
 TOKEN_EXPIRED = 4001
+HEARTBEAT_TIMEOUT = 4002
 USER_INACTIVE = 4003
+
+HEARTBEAT_TIMEOUT_SECONDS = 60
 
 
 async def forward_events(websocket: WebSocket, events: AsyncGenerator[ChannelEvent]) -> None:
@@ -64,13 +67,25 @@ async def websocket_endpoint(
         else None
     )
 
+    loop = asyncio.get_running_loop()
+    token_deadline = loop.time() + (claims.expires_at - time.time())
+    heartbeat_deadline = loop.time() + HEARTBEAT_TIMEOUT_SECONDS
+
     connections.add(user.user_id, websocket)
     try:
-        async with asyncio.timeout(claims.expires_at - time.time()):
+        async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
             while True:
-                await websocket.receive_text()  # CHAT-184 and CHAT-185 handle the messages
+                raw = await websocket.receive_text()
+                if await handle_message(websocket, raw):
+                    heartbeat_deadline = (
+                        websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
+                    )
+                    timeout.reschedule(min(token_deadline, heartbeat_deadline))
     except TimeoutError:
-        await websocket.close(TOKEN_EXPIRED, "token_expired")
+        if token_deadline <= heartbeat_deadline:
+            await websocket.close(TOKEN_EXPIRED, "token_expired")
+        else:
+            await websocket.close(HEARTBEAT_TIMEOUT, "heartbeat_timeout")
     except WebSocketDisconnect:
         pass
     finally:
