@@ -34,3 +34,12 @@ async def edit_message(
     service: MessageServiceDep,
 ) -> MessageResponse:
     return await service.edit(user, message_id, data)
+
+
+@router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_message(
+    message_id: uuid.UUID,
+    user: CurrentUser,
+    service: MessageServiceDep,
+) -> None:
+    await service.delete(user, message_id)

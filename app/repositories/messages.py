@@ -66,3 +66,17 @@ class MessageRepository:
             .execution_options(populate_existing=True)
         )
         return (await self._session.scalars(stmt)).one_or_none()
+
+    async def soft_delete_message(self, message_id: uuid.UUID) -> Message | None:
+        """
+        Clear the body and mentions and set deleted_at (database time).
+        The UPDATE locks the row, and returns None if the message was already deleted.
+        """
+        stmt = (
+            update(Message)
+            .where(Message.id == message_id, Message.deleted_at.is_(None))
+            .values(body="", mentions=[], deleted_at=func.now())
+            .returning(Message)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(stmt)).one_or_none()

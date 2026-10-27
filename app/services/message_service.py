@@ -30,6 +30,10 @@ from app.services.event_bus import EventBus
 MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
 
 
+class _DeletedMeanwhile(Exception):
+    """Raised inside the delete transaction to roll back the seq it took."""
+
+
 def extract_mentions(body: str, member_ids: set[uuid.UUID]) -> list[uuid.UUID]:
     """
     The channel members mentioned in body, each once, in order.
@@ -204,3 +208,37 @@ class MessageService:
         except (NotFound, PermissionDenied) as exc:
             raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
         return message
+
+    async def delete(self, user: Memberships, message_id: uuid.UUID) -> None:
+        """Soft-delete a message (D-05). Takes the next seq and sends message.deleted."""
+        message = await self._get_readable_message(user, message_id)
+        await self._access.get_channel_for_delete(user, message.channel_id, message.author_id)
+        if message.deleted_at is not None:
+            return  # already deleted: 204, no event
+
+        try:
+            async with self._session.begin():
+                seq = await self._counters.next_seq(message.channel_id)
+                deleted = await self._messages.soft_delete_message(message_id)
+
+                if deleted is None:  # deleted by another request after the check above
+                    raise _DeletedMeanwhile
+                # TODO(CHAT-127): remove the message's pins
+
+                payload = {
+                    "message_id": str(deleted.id),
+                    "deleted_by": str(user.user_id),
+                    **to_message_response(deleted).model_dump(mode="json", include={"deleted_at"}),
+                }
+                await self._events.insert_channel_event(
+                    deleted.channel_id, seq, EventType.MESSAGE_DELETED, payload
+                )
+
+        except _DeletedMeanwhile:
+            return
+
+        assert deleted.deleted_at is not None  # set by soft_delete_message
+        await self._publish(
+            EventType.MESSAGE_DELETED, deleted.channel_id, seq, deleted.deleted_at, payload
+        )
+        # TODO(CHAT-212): detach the message's files through chatty-core (D-03)
