@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,9 @@ from app.models import Message
 class MessageRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_message(self, message_id: uuid.UUID) -> Message | None:
+        return await self._session.get(Message, message_id)
 
     async def get_by_client_msg_id(
         self, author_id: uuid.UUID, client_msg_id: uuid.UUID
@@ -47,3 +50,33 @@ class MessageRepository:
             raise MessageAlreadySent() from exc
         await self._session.refresh(message)
         return message
+
+    async def update_message_body(
+        self, message_id: uuid.UUID, body: str, mentions: list[uuid.UUID]
+    ) -> Message | None:
+        """
+        Set the new body and mentions; edited_at is the database time. The UPDATE locks the row,
+        and returns None if the message was deleted meanwhile.
+        """
+        stmt = (
+            update(Message)
+            .where(Message.id == message_id, Message.deleted_at.is_(None))
+            .values(body=body, mentions=mentions, edited_at=func.now())
+            .returning(Message)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(stmt)).one_or_none()
+
+    async def soft_delete_message(self, message_id: uuid.UUID) -> Message | None:
+        """
+        Clear the body and mentions and set deleted_at (database time).
+        The UPDATE locks the row, and returns None if the message was already deleted.
+        """
+        stmt = (
+            update(Message)
+            .where(Message.id == message_id, Message.deleted_at.is_(None))
+            .values(body="", mentions=[], deleted_at=func.now())
+            .returning(Message)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(stmt)).one_or_none()

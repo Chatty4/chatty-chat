@@ -39,3 +39,7 @@ class MessageResponse(BaseModel):
     edited_at: datetime | None
     deleted_at: datetime | None
     created_at: datetime
+
+
+class EditMessageRequest(BaseModel):
+    body: str = Field(max_length=4000)

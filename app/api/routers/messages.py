@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Response, status
 
 from app.api.deps import CurrentUser, MessageServiceDep
-from app.schemas.messages import MessageResponse, SendMessageRequest
+from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
 
 router = APIRouter()
 
@@ -24,3 +24,22 @@ async def send_message(
     if not created:
         response.status_code = status.HTTP_200_OK  # a retry returns the original
     return message
+
+
+@router.put("/messages/{message_id}", response_model=MessageResponse)
+async def edit_message(
+    message_id: uuid.UUID,
+    data: EditMessageRequest,
+    user: CurrentUser,
+    service: MessageServiceDep,
+) -> MessageResponse:
+    return await service.edit(user, message_id, data)
+
+
+@router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_message(
+    message_id: uuid.UUID,
+    user: CurrentUser,
+    service: MessageServiceDep,
+) -> None:
+    await service.delete(user, message_id)
