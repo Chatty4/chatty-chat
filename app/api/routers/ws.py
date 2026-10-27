@@ -8,7 +8,7 @@ from app.api.deps import AccessServiceDep, GatewayDep
 from app.core.codes import CloseCode
 from app.core.exceptions import Unauthorized, UserInactive
 from app.core.security import decode_access_token
-from app.schemas.ws import Heartbeat
+from app.schemas.ws import ClientMessage, Heartbeat, Unwatch, Watch
 
 router = APIRouter()
 
@@ -18,12 +18,23 @@ HEARTBEAT_TIMEOUT_SECONDS = 60
 async def handle_message(websocket: WebSocket, raw: str) -> bool:
     """Returns True for a valid heartbeat. CHAT-215 refreshes the presence key here."""
     try:
-        heartbeat = Heartbeat.model_validate_json(raw)
+        message = ClientMessage.validate_json(raw)
     except ValidationError:
         return False  # invalid JSON, not an object, unknown type, bad field: ignored
-    websocket.state.visible = heartbeat.visible
-    websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
-    return True
+    match message:
+        case Heartbeat():
+            websocket.state.visible = message.visible
+            websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
+            return True
+        case Watch() | Unwatch():  # CHAT-231 replaces this
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "cannot_watch",
+                    "message": "channel is not public in your teams",
+                }
+            )
+    return False
 
 
 @router.websocket("/ws")

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 import uuid
@@ -16,7 +17,7 @@ from app.api.routers.ws import handle_message
 from app.schemas.core import Memberships
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
-from tests.fakes import FakeCore, memberships
+from tests.fakes import FakeCore, FakeSocket, memberships
 
 USER_ID = uuid.uuid4()
 URL = "/api/chat/v1/ws"
@@ -185,7 +186,7 @@ def test_only_heartbeat_resets_the_timer(app, ws_client, make_token, monkeypatch
 
 
 def fake_socket() -> SimpleNamespace:
-    """handle_message only touches websocket.state."""
+    """Only state, no send_json: a test using it fails if handle_message sends anything."""
     return SimpleNamespace(state=SimpleNamespace())
 
 
@@ -210,6 +211,8 @@ async def test_heartbeat_stores_visible_and_last_heartbeat_at():
         '{"type": "heartbeat", "visible": "yes"}',
         '{"type": "heartbeat", "visible": 1}',
         '{"type": "heartbeat"}',
+        '{"type": "watch", "channel_id": "not-a-uuid"}',
+        '{"type": "unwatch"}',
     ],
     ids=[
         "invalid json",
@@ -220,6 +223,8 @@ async def test_heartbeat_stores_visible_and_last_heartbeat_at():
         "string visible",
         "int visible",
         "missing visible",
+        "watch with bad channel_id",
+        "unwatch without channel_id",
     ],
 )
 async def test_invalid_messages_are_ignored(raw):
@@ -228,3 +233,40 @@ async def test_invalid_messages_are_ignored(raw):
     assert await handle_message(socket, raw) is False
 
     assert vars(socket.state) == {}
+
+
+@pytest.mark.parametrize("message_type", ["watch", "unwatch"])
+async def test_watch_and_unwatch_reply_cannot_watch(message_type):
+    # FakeSocket has no state, so this also fails if watch touched the heartbeat fields
+    socket = FakeSocket()
+    raw = json.dumps({"type": message_type, "channel_id": str(uuid.uuid4())})
+
+    assert await handle_message(socket, raw) is False
+
+    assert socket.frames == [
+        {
+            "type": "error",
+            "code": "cannot_watch",
+            "message": "channel is not public in your teams",
+        }
+    ]
+    assert socket.closed is None
+
+
+def test_watch_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+    watch = {"type": "watch", "channel_id": str(uuid.uuid4())}
+
+    with (
+        ws_client.websocket_connect(f"{URL}?token={token}") as ws,
+        pytest.raises(WebSocketDisconnect) as closed,
+    ):
+        for _ in range(10):  # 1 s of watch messages, twice the timeout
+            ws.send_json(watch)
+            time.sleep(0.1)
+        while True:  # skip the cannot_watch replies until the close
+            ws.receive_json()
+
+    assert closed.value.code == 4002
