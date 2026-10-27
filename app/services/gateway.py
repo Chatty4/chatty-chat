@@ -26,6 +26,8 @@ from app.services.event_bus import channel_name
 
 logger = logging.getLogger(__name__)
 
+SEND_TIMEOUT_SECONDS = 5
+
 
 class Socket(Protocol):
     async def send_json(self, data: Any) -> None: ...
@@ -88,13 +90,17 @@ class Gateway:
             await self._unsubscribe([watched.channel_id])
 
     async def run(self) -> None:
-        """Runs until cancelled. After a Redis drop, subscribes again to what the registry has."""
+        """Runs until cancelled. After a Redis drop, closes every socket so clients /sync."""
         backoff = 1
+        reconnect = False
         while True:
             try:
                 async with self._redis.pubsub() as pubsub:  # type: ignore
                     await pubsub.subscribe(CORE_EVENTS)  # opens the connection
                     self._pubsub = pubsub
+                    if reconnect:
+                        # Pub/sub doesn't replay what was sent while Redis was down.
+                        await self._close_all(CloseCode.GOING_AWAY, "gateway_restart")
                     await self._subscribe(self._connections.channel_ids())
                     backoff = 1
                     async for message in pubsub.listen():
@@ -107,6 +113,7 @@ class Gateway:
             except RedisError:
                 logger.warning("Gateway lost Redis, retrying in %s s", backoff, exc_info=True)
                 self._pubsub = None
+                reconnect = True
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
@@ -160,19 +167,29 @@ class Gateway:
                 await self._unsubscribe([data.channel_id])
 
     async def _send_all(self, sockets: set[Socket], frame: dict[str, Any]) -> None:
-        # shortcut: a slow socket delays the next event for everyone on this gateway;
-        # give each socket its own queue if the load test (CHAT-224) shows it.
+        # shortcut: a stuck socket delays this gateway's events once, by SEND_TIMEOUT_SECONDS,
+        # then it is dropped; give each socket its own queue if the load test (CHAT-224) shows it.
         await asyncio.gather(*(self._send(socket, frame) for socket in list(sockets)))
 
     async def _send(self, socket: Socket, frame: dict[str, Any]) -> None:
         try:
-            await socket.send_json(frame)
+            await asyncio.wait_for(socket.send_json(frame), SEND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # The client stopped reading: stop sending to it, and close it so it reconnects and
+            # /syncs what it missed.
+            await self._unsubscribe(self._connections.leave_all(socket))
+            await self._close(socket, CloseCode.GOING_AWAY, "too_slow")
         except Exception:  # the socket closed meanwhile; its disconnect() cleans up
             logger.debug("Dropped a frame for a closed socket")
 
+    async def _close_all(self, code: int, reason: str) -> None:
+        sockets = self._connections.all_sockets()
+        await asyncio.gather(*(self._close(socket, code, reason) for socket in sockets))
+
     async def _close(self, socket: Socket, code: int, reason: str) -> None:
         try:
-            await socket.close(code, reason)
+            # A stuck socket can't take the close frame either; don't wait on it forever.
+            await asyncio.wait_for(socket.close(code, reason), SEND_TIMEOUT_SECONDS)
         except Exception:  # already closing; its disconnect() cleans up
             logger.debug("Socket was already closed")
 

@@ -1,12 +1,17 @@
+import asyncio
 import json
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.schemas.core import Memberships, TeamMembership
 from app.schemas.events import ChannelEvent
+from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
 from tests.fakes import FakeSocket, memberships
@@ -486,3 +491,97 @@ async def test_another_user_leaving_the_team_keeps_my_watch(gateway):
 
     assert mine.frames == [frame]
     assert theirs.frames == []
+
+
+class FakePubSub:
+    """One Redis pub/sub connection for run(): it drops right away, or stays up."""
+
+    def __init__(self, drops: bool) -> None:
+        self._drops = drops
+
+    async def __aenter__(self) -> FakePubSub:
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        pass
+
+    async def subscribe(self, *channels: str) -> None:
+        pass
+
+    async def listen(self):
+        if self._drops:
+            raise RedisConnectionError("Redis went away")
+        await asyncio.Event().wait()  # stays up until the test cancels run()
+        yield
+
+
+class ClosingSocket(FakeSocket):
+    """Lets a test wait until the gateway closes the socket."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_event = asyncio.Event()
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        await super().close(code, reason)
+        self.closed_event.set()
+
+
+async def stop(task: asyncio.Task) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_after_a_redis_drop_every_socket_is_closed_with_1001(registry):
+    redis = MagicMock()
+    redis.pubsub.side_effect = [FakePubSub(drops=True), FakePubSub(drops=False)]
+    gateway = Gateway(redis, registry)
+    socket = ClosingSocket()
+    await gateway.connect(uuid.uuid4(), socket, [uuid.uuid4()])
+
+    task = asyncio.create_task(gateway.run())
+    async with asyncio.timeout(3):  # run() waits 1 s before it reconnects
+        await socket.closed_event.wait()
+    await stop(task)
+
+    assert socket.closed == (1001, "gateway_restart")
+
+
+async def test_the_first_connect_keeps_the_sockets_open(registry):
+    redis = MagicMock()
+    redis.pubsub.return_value = FakePubSub(drops=False)
+    gateway = Gateway(redis, registry)
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [uuid.uuid4()])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert socket.closed is None
+
+
+class StuckSocket(FakeSocket):
+    """A client that stopped reading: send_json never returns."""
+
+    async def send_json(self, data: Any) -> None:
+        await asyncio.Event().wait()
+
+
+async def test_a_stuck_socket_is_dropped_and_does_not_hold_up_the_others(
+    gateway, registry, monkeypatch
+):
+    monkeypatch.setattr(gateway_module, "SEND_TIMEOUT_SECONDS", 0.05)
+    channel_id = uuid.uuid4()
+    stuck, healthy = StuckSocket(), FakeSocket()
+    await gateway.connect(uuid.uuid4(), stuck, [channel_id])
+    await gateway.connect(uuid.uuid4(), healthy, [channel_id])
+    event = channel_event(channel_id)
+
+    async with asyncio.timeout(1):
+        await gateway.handle_channel_event(event.model_dump_json())
+
+    assert healthy.frames == [event_frame(event)]
+    assert stuck.closed == (1001, "too_slow")
+    assert registry.in_channel(channel_id) == {healthy}

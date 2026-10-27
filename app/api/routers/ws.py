@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from app.api.deps import AccessServiceDep, GatewayDep
 from app.core.codes import CloseCode
-from app.core.exceptions import Unauthorized, UserInactive
+from app.core.exceptions import ServiceUnavailable, Unauthorized, UserInactive
 from app.core.security import decode_access_token
 from app.schemas.core import Memberships
 from app.schemas.ws import ClientMessage, Heartbeat, Unwatch, Watch
@@ -62,6 +62,9 @@ async def websocket_endpoint(
     except UserInactive:
         await websocket.close(CloseCode.USER_INACTIVE, "user_inactive")
         return
+    except ServiceUnavailable:
+        await websocket.close(CloseCode.INTERNAL_ERROR, "core_unavailable")
+        return
 
     loop = asyncio.get_running_loop()
     token_deadline = loop.time() + (claims.expires_at - time.time())
@@ -71,7 +74,12 @@ async def websocket_endpoint(
     try:
         async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
             while True:
-                raw = await websocket.receive_text()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(message.get("code", 1000))
+                raw = message.get("text")
+                if raw is None:
+                    continue  # a binary frame: ignored like any invalid message
                 if await handle_message(websocket, raw, gateway, user):
                     heartbeat_deadline = (
                         websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
