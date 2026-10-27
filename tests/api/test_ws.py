@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_core_client, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
+from app.core.exceptions import ServiceUnavailable
 from app.schemas.core import Memberships, TeamMembership
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
@@ -100,6 +101,13 @@ def test_inactive_user_closes_with_4003(app, ws_client, make_token):
     token = make_token(sub=str(USER_ID))
 
     assert close_code(ws_client, f"{URL}?token={token}") == 4003
+
+
+def test_core_down_at_connect_closes_with_1011(app, ws_client, make_token):
+    use_core(app, FakeCore(error=ServiceUnavailable()))
+    token = make_token(sub=str(USER_ID))
+
+    assert close_code(ws_client, f"{URL}?token={token}") == 1011
 
 
 def test_socket_is_registered_while_open_and_removed_after(app, ws_client, registry, make_token):

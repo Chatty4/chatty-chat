@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from app.api.deps import AccessServiceDep, GatewayDep
 from app.core.codes import CloseCode
-from app.core.exceptions import Unauthorized, UserInactive
+from app.core.exceptions import ServiceUnavailable, Unauthorized, UserInactive
 from app.core.security import decode_access_token
 from app.schemas.core import Memberships
 from app.schemas.ws import ClientMessage, Heartbeat, Unwatch, Watch
@@ -61,6 +61,9 @@ async def websocket_endpoint(
         return
     except UserInactive:
         await websocket.close(CloseCode.USER_INACTIVE, "user_inactive")
+        return
+    except ServiceUnavailable:
+        await websocket.close(CloseCode.INTERNAL_ERROR, "core_unavailable")
         return
 
     loop = asyncio.get_running_loop()

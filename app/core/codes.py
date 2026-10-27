@@ -37,6 +37,7 @@ class CloseCode(IntEnum):
     """api-chat.md, GET /ws, close codes"""
 
     GOING_AWAY = 1001
+    INTERNAL_ERROR = 1011
     TOKEN_EXPIRED = 4001
     HEARTBEAT_TIMEOUT = 4002
     USER_INACTIVE = 4003
