@@ -25,17 +25,32 @@ def memberships(
     return Memberships(user_id=user_id, is_active=is_active, teams=teams or [], channels=[])
 
 
-def channel(*members: uuid.UUID, archived: bool = False, team_deleted: bool = False) -> CoreChannel:
+def channel(
+    *members: uuid.UUID,
+    owner: uuid.UUID | None = None,
+    kind: str = "public",
+    archived: bool = False,
+    team_deleted: bool = False,
+) -> CoreChannel:
+    """`owner` is a member with role owner, added to `members` if it isn't there."""
+    member_ids = list(members)
+    if owner is not None and owner not in member_ids:
+        member_ids.append(owner)
     return CoreChannel.model_validate(
         {
             "channel_id": uuid.uuid4(),
             "team_id": uuid.uuid4(),
-            "kind": "public",
+            "kind": kind,
             "archived": archived,
             "team_deleted": team_deleted,
             "members": [
-                {"user_id": m, "role": "member", "notify_level": "mentions", "muted": False}
-                for m in members
+                {
+                    "user_id": m,
+                    "role": "owner" if m == owner else "member",
+                    "notify_level": "mentions",
+                    "muted": False,
+                }
+                for m in member_ids
             ],
         }
     )
@@ -114,8 +129,9 @@ class FakeMessages:
     """
     `existing` is what the retry lookup finds. With `insert_error`, insert_message raises it, as if
     another request had saved `saved_meanwhile` between the lookup and the insert.
-    `stored` are the messages get_message finds. With `deleted_meanwhile`, update_message_body
-    finds nothing to update, as if the message was deleted after the service checked it.
+    `stored` are the messages get_message finds. With `deleted_meanwhile`, update_message_body and
+    soft_delete_message find nothing to change, as if the message was deleted after the service
+    checked it.
     """
 
     def __init__(
@@ -146,6 +162,15 @@ class FakeMessages:
         message.body = body
         message.mentions = mentions
         message.edited_at = datetime.now(UTC)
+        return message
+
+    async def soft_delete_message(self, message_id: uuid.UUID) -> Message | None:
+        message = self._stored.get(message_id)
+        if message is None or message.deleted_at is not None or self._deleted_meanwhile:
+            return None
+        message.body = ""
+        message.mentions = []
+        message.deleted_at = datetime.now(UTC)
         return message
 
     async def get_by_client_msg_id(

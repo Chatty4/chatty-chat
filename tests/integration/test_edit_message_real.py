@@ -1,9 +1,11 @@
 import uuid
+from typing import cast
 
 import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.config import get_settings
 from app.core.exceptions import AppError
@@ -17,6 +19,7 @@ from app.repositories import (
 from app.schemas.core import CoreChannel
 from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
 from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
 from tests.fakes import FakeBus, FakeCore, channel, memberships
 
@@ -50,8 +53,8 @@ def service(session: AsyncSession, room: CoreChannel, bus: FakeBus) -> MessageSe
         ChannelCounterRepository(session),
         ChannelEventRepository(session),
         ReadStateRepository(session),
-        AccessService(FakeCore(channel=room)),
-        bus,
+        AccessService(cast(CoreClient, FakeCore(channel=room))),
+        cast(EventBus, bus),
     )
 
 
