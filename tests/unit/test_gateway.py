@@ -3,6 +3,7 @@ import json
 import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +11,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.schemas.core import Memberships, TeamMembership
 from app.schemas.events import ChannelEvent
+from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
 from tests.fakes import FakeSocket, memberships
@@ -558,3 +560,28 @@ async def test_the_first_connect_keeps_the_sockets_open(registry):
     await stop(task)
 
     assert socket.closed is None
+
+
+class StuckSocket(FakeSocket):
+    """A client that stopped reading: send_json never returns."""
+
+    async def send_json(self, data: Any) -> None:
+        await asyncio.Event().wait()
+
+
+async def test_a_stuck_socket_is_dropped_and_does_not_hold_up_the_others(
+    gateway, registry, monkeypatch
+):
+    monkeypatch.setattr(gateway_module, "SEND_TIMEOUT_SECONDS", 0.05)
+    channel_id = uuid.uuid4()
+    stuck, healthy = StuckSocket(), FakeSocket()
+    await gateway.connect(uuid.uuid4(), stuck, [channel_id])
+    await gateway.connect(uuid.uuid4(), healthy, [channel_id])
+    event = channel_event(channel_id)
+
+    async with asyncio.timeout(1):
+        await gateway.handle_channel_event(event.model_dump_json())
+
+    assert healthy.frames == [event_frame(event)]
+    assert stuck.closed == (1001, "too_slow")
+    assert registry.in_channel(channel_id) == {healthy}

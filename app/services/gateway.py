@@ -26,6 +26,8 @@ from app.services.event_bus import channel_name
 
 logger = logging.getLogger(__name__)
 
+SEND_TIMEOUT_SECONDS = 5
+
 
 class Socket(Protocol):
     async def send_json(self, data: Any) -> None: ...
@@ -165,13 +167,18 @@ class Gateway:
                 await self._unsubscribe([data.channel_id])
 
     async def _send_all(self, sockets: set[Socket], frame: dict[str, Any]) -> None:
-        # shortcut: a slow socket delays the next event for everyone on this gateway;
-        # give each socket its own queue if the load test (CHAT-224) shows it.
+        # shortcut: a stuck socket delays this gateway's events once, by SEND_TIMEOUT_SECONDS,
+        # then it is dropped; give each socket its own queue if the load test (CHAT-224) shows it.
         await asyncio.gather(*(self._send(socket, frame) for socket in list(sockets)))
 
     async def _send(self, socket: Socket, frame: dict[str, Any]) -> None:
         try:
-            await socket.send_json(frame)
+            await asyncio.wait_for(socket.send_json(frame), SEND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # The client stopped reading: stop sending to it, and close it so it reconnects and
+            # /syncs what it missed.
+            await self._unsubscribe(self._connections.leave_all(socket))
+            await self._close(socket, CloseCode.GOING_AWAY, "too_slow")
         except Exception:  # the socket closed meanwhile; its disconnect() cleans up
             logger.debug("Dropped a frame for a closed socket")
 
@@ -181,7 +188,8 @@ class Gateway:
 
     async def _close(self, socket: Socket, code: int, reason: str) -> None:
         try:
-            await socket.close(code, reason)
+            # A stuck socket can't take the close frame either; don't wait on it forever.
+            await asyncio.wait_for(socket.close(code, reason), SEND_TIMEOUT_SECONDS)
         except Exception:  # already closing; its disconnect() cleans up
             logger.debug("Socket was already closed")
 
