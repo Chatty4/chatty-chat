@@ -114,6 +114,8 @@ class FakeMessages:
     """
     `existing` is what the retry lookup finds. With `insert_error`, insert_message raises it, as if
     another request had saved `saved_meanwhile` between the lookup and the insert.
+    `stored` are the messages get_message finds. With `deleted_meanwhile`, update_message_body
+    finds nothing to update, as if the message was deleted after the service checked it.
     """
 
     def __init__(
@@ -122,11 +124,29 @@ class FakeMessages:
         *,
         insert_error: Exception | None = None,
         saved_meanwhile: Message | None = None,
+        stored: list[Message] | None = None,
+        deleted_meanwhile: bool = False,
     ) -> None:
         self.existing = existing
         self._insert_error = insert_error
         self._saved_meanwhile = saved_meanwhile
+        self._stored = {message.id: message for message in stored or []}
+        self._deleted_meanwhile = deleted_meanwhile
         self.inserted: list[Message] = []
+
+    async def get_message(self, message_id: uuid.UUID) -> Message | None:
+        return self._stored.get(message_id)
+
+    async def update_message_body(
+        self, message_id: uuid.UUID, body: str, mentions: list[uuid.UUID]
+    ) -> Message | None:
+        message = self._stored.get(message_id)
+        if message is None or message.deleted_at is not None or self._deleted_meanwhile:
+            return None
+        message.body = body
+        message.mentions = mentions
+        message.edited_at = datetime.now(UTC)
+        return message
 
     async def get_by_client_msg_id(
         self, author_id: uuid.UUID, client_msg_id: uuid.UUID
