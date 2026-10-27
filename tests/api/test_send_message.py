@@ -78,6 +78,39 @@ async def test_retry_is_200_with_the_original(app, client, auth):
     assert fakes.bus.published == []
 
 
+async def test_retry_after_the_channel_was_archived_is_200(app, client, auth):
+    room = channel(USER_ID, archived=True)
+    client_msg_id = uuid.uuid4()
+    original = saved_message(room.channel_id, USER_ID, client_msg_id)
+    use(app, room, FakeMessages(existing=original))
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(client_msg_id), "body": "hi"},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(original.id)
+
+
+async def test_client_msg_id_used_in_another_channel_is_400(app, client, auth):
+    room = channel(USER_ID)
+    client_msg_id = uuid.uuid4()
+    use(app, room, FakeMessages(existing=saved_message(uuid.uuid4(), USER_ID, client_msg_id)))
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(client_msg_id), "body": "hi"},
+        headers=auth,
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "validation_error"
+    assert error["fields"] == {"client_msg_id": "already_used"}
+
+
 @pytest.mark.parametrize(
     ("data", "fields"),
     [
