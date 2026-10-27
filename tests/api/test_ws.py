@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_core_client, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
-from app.schemas.core import Memberships
+from app.schemas.core import Memberships, TeamMembership
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
 from tests.fakes import FakeCore, FakeSocket, memberships
@@ -190,11 +190,27 @@ def fake_socket() -> SimpleNamespace:
     return SimpleNamespace(state=SimpleNamespace())
 
 
-async def test_heartbeat_stores_visible_and_last_heartbeat_at():
+def watcher_of(*public_channel_ids: uuid.UUID) -> Memberships:
+    """USER_ID in one team whose public channels are public_channel_ids."""
+    team = TeamMembership(
+        team_id=uuid.uuid4(), role="member", public_channel_ids=list(public_channel_ids)
+    )
+    return memberships(USER_ID, teams=[team])
+
+
+CANNOT_WATCH = {
+    "type": "error",
+    "code": "cannot_watch",
+    "message": "channel is not public in your teams",
+}
+
+
+async def test_heartbeat_stores_visible_and_last_heartbeat_at(gateway):
     socket = fake_socket()
     before = asyncio.get_running_loop().time()
+    raw = '{"type": "heartbeat", "visible": false}'
 
-    assert await handle_message(socket, '{"type": "heartbeat", "visible": false}') is True
+    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is True
 
     assert socket.state.visible is False
     assert socket.state.last_heartbeat_at >= before
@@ -227,30 +243,61 @@ async def test_heartbeat_stores_visible_and_last_heartbeat_at():
         "unwatch without channel_id",
     ],
 )
-async def test_invalid_messages_are_ignored(raw):
+async def test_invalid_messages_are_ignored(gateway, registry, raw):
     socket = fake_socket()
 
-    assert await handle_message(socket, raw) is False
+    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is False
 
     assert vars(socket.state) == {}
+    assert registry.channel_ids() == []
 
 
-@pytest.mark.parametrize("message_type", ["watch", "unwatch"])
-async def test_watch_and_unwatch_reply_cannot_watch(message_type):
+async def test_watch_of_a_channel_not_public_in_the_users_teams_replies_cannot_watch(
+    gateway, registry
+):
     # FakeSocket has no state, so this also fails if watch touched the heartbeat fields
     socket = FakeSocket()
-    raw = json.dumps({"type": message_type, "channel_id": str(uuid.uuid4())})
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
 
-    assert await handle_message(socket, raw) is False
+    assert await handle_message(socket, raw, gateway, watcher_of(uuid.uuid4())) is False
 
-    assert socket.frames == [
-        {
-            "type": "error",
-            "code": "cannot_watch",
-            "message": "channel is not public in your teams",
-        }
-    ]
+    assert socket.frames == [CANNOT_WATCH]
     assert socket.closed is None
+    assert registry.in_channel(channel_id) == set()
+
+
+async def test_watch_of_a_public_channel_subscribes_without_a_reply(gateway, registry):
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+
+    assert await handle_message(socket, raw, gateway, watcher_of(channel_id)) is False
+
+    assert socket.frames == []
+    assert registry.in_channel(channel_id) == {socket}
+
+
+async def test_unwatch_ends_the_watch_without_a_reply(gateway, registry):
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    user = watcher_of(channel_id)
+    await gateway.watch(socket, user, channel_id)
+    raw = json.dumps({"type": "unwatch", "channel_id": str(channel_id)})
+
+    assert await handle_message(socket, raw, gateway, user) is False
+
+    assert socket.frames == []
+    assert registry.in_channel(channel_id) == set()
+
+
+async def test_unwatch_without_a_watch_replies_nothing(gateway):
+    socket = FakeSocket()
+    raw = json.dumps({"type": "unwatch", "channel_id": str(uuid.uuid4())})
+
+    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is False
+
+    assert socket.frames == []
 
 
 def test_watch_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, monkeypatch):
