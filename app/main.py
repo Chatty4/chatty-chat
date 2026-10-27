@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
@@ -17,6 +18,14 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
+
+logger = logging.getLogger(__name__)
+
+
+def log_crash(task: asyncio.Task) -> None:
+    """Without it, a crashed background task stops silently and /health still says ok."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.critical("%s stopped", task.get_name(), exc_info=task.exception())
 
 
 @asynccontextmanager
@@ -42,8 +51,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         socket_connect_timeout=2,
     )
     app.state.gateway = Gateway(events_redis, app.state.connections)
-    gateway_task = asyncio.create_task(app.state.gateway.run())
-    events_task = asyncio.create_task(listen_core_events(events_redis))
+    gateway_task = asyncio.create_task(app.state.gateway.run(), name="gateway")
+    events_task = asyncio.create_task(listen_core_events(events_redis), name="core events")
+    gateway_task.add_done_callback(log_crash)
+    events_task.add_done_callback(log_crash)
     try:
         yield
     finally:
