@@ -30,7 +30,7 @@ async def test_new_message_is_saved_then_published():
     payload = {"message": message.model_dump(mode="json")}
     assert fakes.events.rows == [(room.channel_id, 8, "message.created", payload)]
     assert fakes.read_state.positions == {(USER_ID, room.channel_id): 8}
-    assert fakes.log == ["commit", "publish"]
+    assert fakes.log == ["commit", "commit", "publish"]  # the retry lookup, the write, publish
     [(channel_id, event)] = fakes.bus.published
     assert channel_id == room.channel_id
     assert (event["type"], event["seq"], event["payload"]) == ("message.created", 8, payload)
@@ -62,8 +62,50 @@ async def test_retry_that_loses_the_race_returns_the_winner():
 
     assert not created
     assert message.id == winner.id
-    assert fakes.log == ["rollback"]
+    assert fakes.log == ["commit", "rollback"]
     assert fakes.events.rows == []
+    assert fakes.bus.published == []
+
+
+@pytest.mark.parametrize("flags", [{"archived": True}, {"team_deleted": True}])
+async def test_retry_after_the_channel_was_archived_returns_the_original(flags):
+    room = channel(USER_ID, **flags)
+    data = request()
+    original = saved_message(room.channel_id, USER_ID, data.client_msg_id, seq=3)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(existing=original))
+
+    message, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert not created
+    assert message.id == original.id
+    assert fakes.bus.published == []
+
+
+async def test_client_msg_id_used_in_another_channel_is_400():
+    room = channel(USER_ID)
+    data = request()
+    elsewhere = saved_message(uuid.uuid4(), USER_ID, data.client_msg_id)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(existing=elsewhere))
+
+    with pytest.raises(ValidationFailed) as error:
+        await fakes.service.send(USER, room.channel_id, data)
+
+    assert error.value.fields == {"client_msg_id": "already_used"}
+    assert fakes.counters.last_seq == 0
+    assert fakes.bus.published == []
+
+
+async def test_race_won_in_another_channel_is_400():
+    room = channel(USER_ID)
+    data = request()
+    winner = saved_message(uuid.uuid4(), USER_ID, data.client_msg_id)
+    messages = FakeMessages(insert_error=MessageAlreadySent(), saved_meanwhile=winner)
+    fakes = MessageFakes(FakeCore(channel=room), messages)
+
+    with pytest.raises(ValidationFailed) as error:
+        await fakes.service.send(USER, room.channel_id, data)
+
+    assert error.value.fields == {"client_msg_id": "already_used"}
     assert fakes.bus.published == []
 
 
@@ -74,7 +116,7 @@ async def test_unique_violation_without_an_original_is_raised():
     with pytest.raises(MessageAlreadySent):
         await fakes.service.send(USER, room.channel_id, request())
 
-    assert fakes.log == ["rollback"]
+    assert fakes.log == ["commit", "rollback"]
     assert fakes.bus.published == []
 
 
@@ -97,7 +139,7 @@ async def test_files_are_refused_until_attachments_exist():
 
     assert (error.value.status_code, error.value.code) == (400, ErrorCode.INVALID_FILE)
     assert fakes.counters.last_seq == 0
-    assert fakes.log == ["rollback"]
+    assert fakes.log == ["commit", "rollback"]
     assert fakes.bus.published == []
 
 
@@ -117,5 +159,5 @@ async def test_user_who_cannot_write_changes_nothing(room, status, code):
         await fakes.service.send(USER, uuid.uuid4(), request())
 
     assert (error.value.status_code, error.value.code) == (status, code)
-    assert fakes.log == []
+    assert fakes.log == ["commit"]  # only the retry lookup
     assert fakes.counters.last_seq == 0

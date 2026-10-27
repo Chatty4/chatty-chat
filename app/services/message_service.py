@@ -111,17 +111,18 @@ class MessageService:
         if not data.body and not data.file_ids:
             raise ValidationFailed(fields={"body": "required"})
 
+        # Before the access check: a retry returns the saved message even if the channel was
+        # archived since. It is the sender's own message, so nothing new is revealed.
+        async with self._session.begin():  # ends the read, so the write can begin() its own
+            existing = await self._messages.get_by_client_msg_id(user.user_id, data.client_msg_id)
+        if existing is not None:
+            return self._retry(existing, channel_id), False
+
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
 
         try:
             async with self._session.begin():
-                existing = await self._messages.get_by_client_msg_id(
-                    user.user_id, data.client_msg_id
-                )
-                if existing is not None:
-                    return to_message_response(existing), False
-
                 # TODO(CHAT-212): attach the files through chatty-core before saving (D-03)
                 if data.file_ids:
                     raise BadRequest(
@@ -146,14 +147,23 @@ class MessageService:
                 await self._read_state.advance_read_position(user.user_id, channel_id, seq)
 
         except MessageAlreadySent:
-            # A concurrent retry committed first. The transaction above rolled back.
+            # A concurrent request with this client_msg_id committed first; this one rolled back.
             original = await self._messages.get_by_client_msg_id(user.user_id, data.client_msg_id)
             if original is None:
                 raise  # another constraint failed, not a retry
-            return to_message_response(original), False
+            return self._retry(original, channel_id), False
 
         await self._publish(EventType.MESSAGE_CREATED, channel_id, seq, message.created_at, payload)
         return response, True
+
+    def _retry(self, existing: Message, channel_id: uuid.UUID) -> MessageResponse:
+        """The saved message for a retry. Its client_msg_id in another channel is a client bug."""
+        if existing.channel_id != channel_id:
+            raise ValidationFailed(
+                message="client_msg_id was already used for a message in another channel",
+                fields={"client_msg_id": "already_used"},
+            )
+        return to_message_response(existing)
 
     async def edit(
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest

@@ -1,14 +1,10 @@
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
 from typing import Any
 
 from redis.asyncio import Redis
-from redis.asyncio.client import PubSub
 from redis.exceptions import RedisError
-
-from app.schemas.events import ChannelEvent
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +18,8 @@ def channel_name(channel_id: uuid.UUID) -> str:
 
 
 class EventBus:
+    """Sends channel events. The Gateway (services/gateway.py) receives them."""
+
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
@@ -34,25 +32,3 @@ class EventBus:
             await self._redis.publish(channel_name(channel_id), json.dumps(event))
         except RedisError:
             logger.exception("Failed to publish event for channel %s", channel_id)
-
-    async def subscribe(self, channel_ids: list[uuid.UUID]) -> AsyncGenerator[ChannelEvent]:
-        """
-        Listen for events on the given channels and yield them one by one.
-        Cancel the enclosing task when you want to stop.
-        """
-        pubsub: PubSub = self._redis.pubsub()
-        channels = [channel_name(cid) for cid in channel_ids]
-
-        await pubsub.subscribe(*channels)
-
-        try:
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                try:
-                    yield ChannelEvent.model_validate_json(message["data"])
-                except Exception:
-                    logger.exception("Malformed event on %s", message.get("channel"))
-        finally:
-            await pubsub.unsubscribe(*channels)
-            await pubsub.aclose()

@@ -12,13 +12,18 @@ logger = logging.getLogger(__name__)
 
 CORE_EVENTS = "core.events"
 MAX_BACKOFF_SECONDS = 30
+SCAN_BATCH = 500
 
 
 async def delete_matching(redis: Redis, pattern: str) -> None:
-    # SCAN, never KEYS: KEYS blocks Redis while it walks every key.
-    keys = [key async for key in redis.scan_iter(match=pattern, count=500)]
-    if keys:
-        await redis.delete(*keys)
+    batch: list[str] = []
+    async for key in redis.scan_iter(match=pattern, count=SCAN_BATCH):
+        batch.append(key)
+        if len(batch) == SCAN_BATCH:
+            await redis.delete(*batch)
+            batch.clear()
+    if batch:
+        await redis.delete(*batch)
 
 
 async def clear_cache(redis: Redis) -> None:
