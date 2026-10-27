@@ -21,6 +21,9 @@ class ConnectionRegistry[T]:
         if not sockets:
             del self._sockets[user_id]
 
+    def all_sockets(self) -> list[T]:
+        return [socket for sockets in self._sockets.values() for socket in sockets]
+
     def sockets(self, user_id: uuid.UUID) -> set[T]:
         return self._sockets.get(user_id, set())
 

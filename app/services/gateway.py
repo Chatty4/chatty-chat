@@ -88,13 +88,17 @@ class Gateway:
             await self._unsubscribe([watched.channel_id])
 
     async def run(self) -> None:
-        """Runs until cancelled. After a Redis drop, subscribes again to what the registry has."""
+        """Runs until cancelled. After a Redis drop, closes every socket so clients /sync."""
         backoff = 1
+        reconnect = False
         while True:
             try:
                 async with self._redis.pubsub() as pubsub:  # type: ignore
                     await pubsub.subscribe(CORE_EVENTS)  # opens the connection
                     self._pubsub = pubsub
+                    if reconnect:
+                        # Pub/sub doesn't replay what was sent while Redis was down.
+                        await self._close_all(CloseCode.GOING_AWAY, "gateway_restart")
                     await self._subscribe(self._connections.channel_ids())
                     backoff = 1
                     async for message in pubsub.listen():
@@ -107,6 +111,7 @@ class Gateway:
             except RedisError:
                 logger.warning("Gateway lost Redis, retrying in %s s", backoff, exc_info=True)
                 self._pubsub = None
+                reconnect = True
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SECONDS)
 
@@ -169,6 +174,10 @@ class Gateway:
             await socket.send_json(frame)
         except Exception:  # the socket closed meanwhile; its disconnect() cleans up
             logger.debug("Dropped a frame for a closed socket")
+
+    async def _close_all(self, code: int, reason: str) -> None:
+        sockets = self._connections.all_sockets()
+        await asyncio.gather(*(self._close(socket, code, reason) for socket in sockets))
 
     async def _close(self, socket: Socket, code: int, reason: str) -> None:
         try:
