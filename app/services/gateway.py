@@ -16,6 +16,8 @@ from app.schemas.core_events import (
     CoreEvent,
     MembershipAction,
     MembershipChangedData,
+    TeamMemberAction,
+    TeamMemberChangedData,
     UserData,
 )
 from app.schemas.events import ChannelEvent
@@ -131,6 +133,13 @@ class Gateway:
                     data = UserData.model_validate(event.data)
                     for socket in list(self._connections.sockets(data.user_id)):
                         await self._close(socket, CloseCode.USER_INACTIVE, "user_inactive")
+                case "team.member.changed":
+                    data = TeamMemberChangedData.model_validate(event.data)
+                    if data.action in (TeamMemberAction.LEFT, TeamMemberAction.REMOVED):
+                        for socket in list(self._connections.sockets(data.user_id)):
+                            watched = self._watching.get(socket)
+                            if watched is not None and watched.team_id == data.team_id:
+                                await self.unwatch(socket)
                 # other types: nothing for the gateway; the cache listener logs unknown ones
         except ValidationError:
             logger.warning("Ignoring malformed core event: %.200s", raw)
@@ -141,6 +150,10 @@ class Gateway:
             first = [self._connections.join(socket, data.channel_id) for socket in sockets]
             if any(first):
                 await self._subscribe([data.channel_id])
+            for socket in sockets:
+                watched = self._watching.get(socket)
+                if watched is not None and watched.channel_id == data.channel_id:
+                    del self._watching[socket]  # the watch becomes a normal subscription
         elif data.action == MembershipAction.REMOVED:
             last = [self._connections.leave(socket, data.channel_id) for socket in sockets]
             if any(last):

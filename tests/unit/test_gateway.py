@@ -391,3 +391,98 @@ async def test_disconnect_forgets_the_watch(gateway):
     frame = await deliver(gateway, channel_id)
 
     assert socket.frames == [frame]
+
+
+def team_member_changed(user_id: uuid.UUID, team_id: uuid.UUID, action: str) -> str:
+    role = "member" if action in ("joined", "role_changed") else None
+    return core_event(
+        "team.member.changed", user_id=user_id, team_id=team_id, action=action, role=role
+    )
+
+
+async def test_joining_the_watched_channel_turns_the_watch_into_a_membership(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(membership_changed(user.user_id, channel_id, "added"))
+    # without the promotion, this unwatch would leave a channel the user is now a member of
+    await gateway.unwatch(socket, channel_id)
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_joining_another_channel_keeps_the_watch(gateway):
+    watched, joined = uuid.uuid4(), uuid.uuid4()
+    user = viewer(watched)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, watched)
+
+    await gateway.handle_core_event(membership_changed(user.user_id, joined, "added"))
+    await gateway.unwatch(socket, watched)
+    await deliver(gateway, watched)
+
+    assert socket.frames == []  # still a watch, so unwatch ended it
+
+
+@pytest.mark.parametrize("action", ["left", "removed"])
+async def test_leaving_the_team_ends_its_watch_on_every_tab(gateway, registry, action):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    user = viewer(channel_id, team_id=team_id)
+    first_tab, second_tab = FakeSocket(), FakeSocket()
+    for socket in (first_tab, second_tab):
+        await gateway.connect(user.user_id, socket, [])
+        await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, team_id, action))
+    await deliver(gateway, channel_id)
+
+    assert first_tab.frames == second_tab.frames == []
+    assert registry.in_channel(channel_id) == set()
+
+
+@pytest.mark.parametrize("action", ["joined", "role_changed"])
+async def test_other_team_changes_keep_the_watch(gateway, action):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    user = viewer(channel_id, team_id=team_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, team_id, action))
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_leaving_another_team_keeps_the_watch(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, uuid.uuid4(), "left"))
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_another_user_leaving_the_team_keeps_my_watch(gateway):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    me, other = viewer(channel_id, team_id=team_id), viewer(channel_id, team_id=team_id)
+    mine, theirs = FakeSocket(), FakeSocket()
+    await gateway.connect(me.user_id, mine, [])
+    await gateway.connect(other.user_id, theirs, [])
+    await gateway.watch(mine, me, channel_id)
+    await gateway.watch(theirs, other, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(other.user_id, team_id, "removed"))
+    frame = await deliver(gateway, channel_id)
+
+    assert mine.frames == [frame]
+    assert theirs.frames == []
