@@ -9,6 +9,14 @@ from redis.asyncio.client import PubSub
 from redis.exceptions import RedisError
 
 from app.clients.core_events import CORE_EVENTS, MAX_BACKOFF_SECONDS
+from app.core.codes import CloseCode
+from app.schemas.core_events import (
+    ChannelUpdatedData,
+    CoreEvent,
+    MembershipAction,
+    MembershipChangedData,
+    UserData,
+)
 from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
 from app.services.event_bus import channel_name
@@ -54,7 +62,7 @@ class Gateway:
                         if message["type"] != "message":
                             continue
                         if message["channel"] == CORE_EVENTS:
-                            await self.handle_core_event(message["data"])  # step 4
+                            await self.handle_core_event(message["data"])
                         else:
                             await self.handle_channel_event(message["data"])
             except RedisError:
@@ -73,7 +81,33 @@ class Gateway:
         await self._send_all(self._connections.in_channel(event.channel_id), frame)
 
     async def handle_core_event(self, raw: str) -> None:
-        pass  # step 4
+        try:
+            event = CoreEvent.model_validate_json(raw)
+            match event.type:
+                case "membership.changed":
+                    await self._membership_changed(MembershipChangedData.model_validate(event.data))
+                case "channel.updated":
+                    data = ChannelUpdatedData.model_validate(event.data)
+                    frame = {"type": "channel.updated"} | data.model_dump(mode="json")
+                    await self._send_all(self._connections.in_channel(data.channel_id), frame)
+                case "user.deactivated":
+                    data = UserData.model_validate(event.data)
+                    for socket in list(self._connections.sockets(data.user_id)):
+                        await self._close(socket, CloseCode.USER_INACTIVE, "user_inactive")
+                # other types: nothing for the gateway; the cache listener logs unknown ones
+        except ValidationError:
+            logger.warning("Ignoring malformed core event: %.200s", raw)
+
+    async def _membership_changed(self, data: MembershipChangedData) -> None:
+        sockets = list(self._connections.sockets(data.user_id))
+        if data.action == MembershipAction.ADDED:
+            first = [self._connections.join(socket, data.channel_id) for socket in sockets]
+            if any(first):
+                await self._subscribe([data.channel_id])
+        elif data.action == MembershipAction.REMOVED:
+            last = [self._connections.leave(socket, data.channel_id) for socket in sockets]
+            if any(last):
+                await self._unsubscribe([data.channel_id])
 
     async def _send_all(self, sockets: set[Socket], frame: dict[str, Any]) -> None:
         # shortcut: a slow socket delays the next event for everyone on this gateway;
@@ -85,6 +119,12 @@ class Gateway:
             await socket.send_json(frame)
         except Exception:  # the socket closed meanwhile; its disconnect() cleans up
             logger.debug("Dropped a frame for a closed socket")
+
+    async def _close(self, socket: Socket, code: int, reason: str) -> None:
+        try:
+            await socket.close(code, reason)
+        except Exception:  # already closing; its disconnect() cleans up
+            logger.debug("Socket was already closed")
 
     async def _subscribe(self, channel_ids: list[uuid.UUID]) -> None:
         if not channel_ids or self._pubsub is None:

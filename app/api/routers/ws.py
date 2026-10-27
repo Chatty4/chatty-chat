@@ -5,16 +5,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app.api.deps import AccessServiceDep, GatewayDep
+from app.core.codes import CloseCode
 from app.core.exceptions import Unauthorized, UserInactive
 from app.core.security import decode_access_token
 from app.schemas.ws import Heartbeat
 
 router = APIRouter()
-
-# api-chat.md, GET /ws, close codes
-TOKEN_EXPIRED = 4001
-HEARTBEAT_TIMEOUT = 4002
-USER_INACTIVE = 4003
 
 HEARTBEAT_TIMEOUT_SECONDS = 60
 
@@ -43,10 +39,10 @@ async def websocket_endpoint(
         claims = decode_access_token(token)
         user = await access.get_user(claims.user_id)
     except Unauthorized:
-        await websocket.close(TOKEN_EXPIRED, "token_expired")
+        await websocket.close(CloseCode.TOKEN_EXPIRED, "token_expired")
         return
     except UserInactive:
-        await websocket.close(USER_INACTIVE, "user_inactive")
+        await websocket.close(CloseCode.USER_INACTIVE, "user_inactive")
         return
 
     loop = asyncio.get_running_loop()
@@ -65,9 +61,9 @@ async def websocket_endpoint(
                     timeout.reschedule(min(token_deadline, heartbeat_deadline))
     except TimeoutError:
         if token_deadline <= heartbeat_deadline:
-            await websocket.close(TOKEN_EXPIRED, "token_expired")
+            await websocket.close(CloseCode.TOKEN_EXPIRED, "token_expired")
         else:
-            await websocket.close(HEARTBEAT_TIMEOUT, "heartbeat_timeout")
+            await websocket.close(CloseCode.HEARTBEAT_TIMEOUT, "heartbeat_timeout")
     except WebSocketDisconnect:
         pass
     finally:
