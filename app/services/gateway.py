@@ -47,6 +47,7 @@ class Gateway:
         self._connections = connections
         self._pubsub: PubSub | None = None  # None while Redis is down; run() fixes it
         self._watching: dict[Socket, Watched] = {}  # at most one watched channel per socket
+        self._closing: set[asyncio.Task] = set()  # keeps background closes from being collected
 
     async def connect(
         self, user_id: uuid.UUID, socket: Socket, channel_ids: list[uuid.UUID]
@@ -176,9 +177,11 @@ class Gateway:
             await asyncio.wait_for(socket.send_json(frame), SEND_TIMEOUT_SECONDS)
         except TimeoutError:
             # The client stopped reading: stop sending to it, and close it so it reconnects and
-            # /syncs what it missed.
+            # /syncs what it missed. In the background, since it won't answer the close either.
             await self._unsubscribe(self._connections.leave_all(socket))
-            await self._close(socket, CloseCode.GOING_AWAY, "too_slow")
+            task = asyncio.create_task(self._close(socket, CloseCode.GOING_AWAY, "too_slow"))
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
         except Exception:  # the socket closed meanwhile; its disconnect() cleans up
             logger.debug("Dropped a frame for a closed socket")
 
