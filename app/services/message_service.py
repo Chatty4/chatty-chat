@@ -1,10 +1,19 @@
 import re
 import uuid
+from datetime import datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import BadRequest, MessageAlreadySent, ValidationFailed
+from app.core.exceptions import (
+    BadRequest,
+    Conflict,
+    MessageAlreadySent,
+    NotFound,
+    PermissionDenied,
+    ValidationFailed,
+)
 from app.models import Message
 from app.repositories import (
     ChannelCounterRepository,
@@ -14,7 +23,7 @@ from app.repositories import (
 )
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent, EventType
-from app.schemas.messages import MessageResponse, SendMessageRequest
+from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 
@@ -77,6 +86,20 @@ class MessageService:
         self._access = access
         self._bus = bus
 
+    async def _publish(
+        self,
+        event_type: EventType,
+        channel_id: uuid.UUID,
+        seq: int,
+        created_at: datetime,
+        payload: dict[str, Any],
+    ) -> None:
+        """Only after the commit, so nobody gets an event for a change that isn't saved."""
+        event = ChannelEvent(
+            type=event_type, channel_id=channel_id, seq=seq, created_at=created_at, payload=payload
+        )
+        await self._bus.publish(channel_id, event.model_dump(mode="json"))
+
     async def send(
         self, user: Memberships, channel_id: uuid.UUID, data: SendMessageRequest
     ) -> tuple[MessageResponse, bool]:
@@ -125,13 +148,59 @@ class MessageService:
                 raise  # another constraint failed, not a retry
             return to_message_response(original), False
 
-        # Only after the commit, so nobody gets an event for a message that isn't saved.
-        event = ChannelEvent(
-            type=EventType.MESSAGE_CREATED,
-            channel_id=channel_id,
-            seq=seq,
-            created_at=message.created_at,
-            payload=payload,
-        )
-        await self._bus.publish(channel_id, event.model_dump(mode="json"))
+        await self._publish(EventType.MESSAGE_CREATED, channel_id, seq, message.created_at, payload)
         return response, True
+
+    async def edit(
+        self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
+    ) -> MessageResponse:
+        """Edit the body of my message. Takes the next seq and sends message.edited."""
+        # TODO(CHAT-212): empty is allowed when the message has files
+        if not data.body:
+            raise ValidationFailed(fields={"body": "required"})
+
+        message = await self._get_readable_message(user, message_id)
+        if message.author_id != user.user_id:
+            raise PermissionDenied(ErrorCode.NOT_AUTHOR, "You can only edit your own messages")
+        if message.deleted_at is not None:
+            raise Conflict(ErrorCode.MESSAGE_DELETED, "The message was deleted")
+
+        channel = await self._access.get_writable_channel(user, message.channel_id)
+        mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
+
+        async with self._session.begin():
+            seq = await self._counters.next_seq(message.channel_id)
+            updated = await self._messages.update_message_body(message_id, data.body, mentions)
+            if updated is None:  # deleted after the check above
+                raise Conflict(ErrorCode.MESSAGE_DELETED, "The message was deleted")
+
+            response = to_message_response(updated)
+            payload = {
+                "message_id": str(updated.id),
+                **response.model_dump(mode="json", include={"body", "mentions", "edited_at"}),
+            }
+            await self._events.insert_channel_event(
+                updated.channel_id, seq, EventType.MESSAGE_EDITED, payload
+            )
+
+        assert updated.edited_at is not None  # set by update_message_body
+        await self._publish(
+            EventType.MESSAGE_EDITED, updated.channel_id, seq, updated.edited_at, payload
+        )
+        return response
+
+    async def _get_readable_message(self, user: Memberships, message_id: uuid.UUID) -> Message:
+        """
+        The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
+        """
+        async with self._session.begin():
+            message = await self._messages.get_message(message_id)
+
+        if message is None:
+            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
+
+        try:
+            await self._access.check_can_read(user, message.channel_id)
+        except (NotFound, PermissionDenied) as exc:
+            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
+        return message

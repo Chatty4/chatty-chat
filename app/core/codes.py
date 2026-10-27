@@ -17,6 +17,7 @@ class ErrorCode(StrEnum):
 
     # 403
     NOT_A_MEMBER = "not_a_member"
+    NOT_AUTHOR = "not_author"
     CANNOT_READ_CHANNEL = "cannot_read_channel"
     NOT_A_TEAM_MEMBER = "not_a_team_member"
 
