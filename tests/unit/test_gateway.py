@@ -5,10 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.schemas.core import Memberships, TeamMembership
 from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
-from tests.fakes import FakeSocket
+from tests.fakes import FakeSocket, memberships
 
 
 @pytest.fixture
@@ -239,3 +240,249 @@ async def test_ignored_core_events_change_nothing(gateway, registry, raw):
     assert registry.in_channel(channel_id) == {socket}
     assert socket.frames == []
     assert socket.closed is None
+
+
+def viewer(*public_channel_ids: uuid.UUID, team_id: uuid.UUID | None = None) -> Memberships:
+    """A user in one team whose public channels are public_channel_ids."""
+    team = TeamMembership(
+        team_id=team_id or uuid.uuid4(), role="member", public_channel_ids=list(public_channel_ids)
+    )
+    return memberships(uuid.uuid4(), teams=[team])
+
+
+async def deliver(gateway: Gateway, channel_id: uuid.UUID) -> dict:
+    """Sends one channel event through the gateway and returns the frame a socket should get."""
+    event = channel_event(channel_id)
+    await gateway.handle_channel_event(event.model_dump_json())
+    return event_frame(event)
+
+
+async def test_watch_of_a_public_channel_delivers_its_events(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+
+    assert await gateway.watch(socket, user, channel_id) is True
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_watch_of_a_channel_not_public_in_the_users_teams_is_refused(gateway, registry):
+    channel_id = uuid.uuid4()
+    user = viewer(uuid.uuid4())  # public channels of the team don't include channel_id
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+
+    assert await gateway.watch(socket, user, channel_id) is False
+    await deliver(gateway, channel_id)
+
+    assert registry.in_channel(channel_id) == set()
+    assert socket.frames == []
+
+
+async def test_a_new_watch_replaces_the_old_one(gateway, registry):
+    first, second = uuid.uuid4(), uuid.uuid4()
+    user = viewer(first, second)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+
+    await gateway.watch(socket, user, first)
+    await gateway.watch(socket, user, second)
+    await deliver(gateway, first)
+    frame = await deliver(gateway, second)
+
+    assert socket.frames == [frame]
+    assert registry.in_channel(first) == set()
+
+
+async def test_replacing_a_watch_keeps_other_watchers_of_the_old_channel(gateway):
+    old, new = uuid.uuid4(), uuid.uuid4()
+    user = viewer(old, new)
+    switching, staying = FakeSocket(), FakeSocket()
+    await gateway.connect(user.user_id, switching, [])
+    await gateway.connect(user.user_id, staying, [])
+    await gateway.watch(switching, user, old)
+    await gateway.watch(staying, user, old)
+
+    await gateway.watch(switching, user, new)
+    frame = await deliver(gateway, old)
+
+    assert staying.frames == [frame]
+    assert switching.frames == []
+
+
+async def test_watching_the_same_channel_twice_is_one_watch(gateway, registry):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+
+    assert await gateway.watch(socket, user, channel_id) is True
+    assert await gateway.watch(socket, user, channel_id) is True
+    await gateway.unwatch(socket, channel_id)
+
+    assert registry.in_channel(channel_id) == set()
+
+
+async def test_unwatch_stops_the_events(gateway, registry):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.unwatch(socket, channel_id)
+    await deliver(gateway, channel_id)
+
+    assert socket.frames == []
+    assert registry.in_channel(channel_id) == set()
+
+
+async def test_unwatch_of_another_channel_keeps_the_watch(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.unwatch(socket, uuid.uuid4())
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_unwatch_without_a_watch_does_nothing(gateway, registry):
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    await gateway.unwatch(socket, channel_id)
+
+    assert registry.in_channel(channel_id) == {socket}
+
+
+async def test_watch_and_unwatch_of_a_joined_channel_keep_the_membership(gateway):
+    # public_channel_ids lists joined channels too; unwatch must not cut the membership
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [channel_id])
+
+    assert await gateway.watch(socket, user, channel_id) is True
+    await gateway.unwatch(socket, channel_id)
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_disconnect_forgets_the_watch(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.disconnect(user.user_id, socket)
+    await gateway.connect(user.user_id, socket, [])
+    # with a stale watch left behind, this would return early as "already watching"
+    await gateway.watch(socket, user, channel_id)
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+def team_member_changed(user_id: uuid.UUID, team_id: uuid.UUID, action: str) -> str:
+    role = "member" if action in ("joined", "role_changed") else None
+    return core_event(
+        "team.member.changed", user_id=user_id, team_id=team_id, action=action, role=role
+    )
+
+
+async def test_joining_the_watched_channel_turns_the_watch_into_a_membership(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(membership_changed(user.user_id, channel_id, "added"))
+    # without the promotion, this unwatch would leave a channel the user is now a member of
+    await gateway.unwatch(socket, channel_id)
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_joining_another_channel_keeps_the_watch(gateway):
+    watched, joined = uuid.uuid4(), uuid.uuid4()
+    user = viewer(watched)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, watched)
+
+    await gateway.handle_core_event(membership_changed(user.user_id, joined, "added"))
+    await gateway.unwatch(socket, watched)
+    await deliver(gateway, watched)
+
+    assert socket.frames == []  # still a watch, so unwatch ended it
+
+
+@pytest.mark.parametrize("action", ["left", "removed"])
+async def test_leaving_the_team_ends_its_watch_on_every_tab(gateway, registry, action):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    user = viewer(channel_id, team_id=team_id)
+    first_tab, second_tab = FakeSocket(), FakeSocket()
+    for socket in (first_tab, second_tab):
+        await gateway.connect(user.user_id, socket, [])
+        await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, team_id, action))
+    await deliver(gateway, channel_id)
+
+    assert first_tab.frames == second_tab.frames == []
+    assert registry.in_channel(channel_id) == set()
+
+
+@pytest.mark.parametrize("action", ["joined", "role_changed"])
+async def test_other_team_changes_keep_the_watch(gateway, action):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    user = viewer(channel_id, team_id=team_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, team_id, action))
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_leaving_another_team_keeps_the_watch(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(user.user_id, uuid.uuid4(), "left"))
+    frame = await deliver(gateway, channel_id)
+
+    assert socket.frames == [frame]
+
+
+async def test_another_user_leaving_the_team_keeps_my_watch(gateway):
+    team_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    me, other = viewer(channel_id, team_id=team_id), viewer(channel_id, team_id=team_id)
+    mine, theirs = FakeSocket(), FakeSocket()
+    await gateway.connect(me.user_id, mine, [])
+    await gateway.connect(other.user_id, theirs, [])
+    await gateway.watch(mine, me, channel_id)
+    await gateway.watch(theirs, other, channel_id)
+
+    await gateway.handle_core_event(team_member_changed(other.user_id, team_id, "removed"))
+    frame = await deliver(gateway, channel_id)
+
+    assert mine.frames == [frame]
+    assert theirs.frames == []

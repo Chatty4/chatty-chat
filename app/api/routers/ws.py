@@ -8,14 +8,18 @@ from app.api.deps import AccessServiceDep, GatewayDep
 from app.core.codes import CloseCode
 from app.core.exceptions import Unauthorized, UserInactive
 from app.core.security import decode_access_token
+from app.schemas.core import Memberships
 from app.schemas.ws import ClientMessage, Heartbeat, Unwatch, Watch
+from app.services.gateway import Gateway
 
 router = APIRouter()
 
 HEARTBEAT_TIMEOUT_SECONDS = 60
 
 
-async def handle_message(websocket: WebSocket, raw: str) -> bool:
+async def handle_message(
+    websocket: WebSocket, raw: str, gateway: Gateway, user: Memberships
+) -> bool:
     """Returns True for a valid heartbeat. CHAT-215 refreshes the presence key here."""
     try:
         message = ClientMessage.validate_json(raw)
@@ -26,14 +30,17 @@ async def handle_message(websocket: WebSocket, raw: str) -> bool:
             websocket.state.visible = message.visible
             websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
             return True
-        case Watch() | Unwatch():  # CHAT-231 replaces this
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "code": "cannot_watch",
-                    "message": "channel is not public in your teams",
-                }
-            )
+        case Watch():
+            if not await gateway.watch(websocket, user, message.channel_id):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "cannot_watch",
+                        "message": "channel is not public in your teams",
+                    }
+                )
+        case Unwatch():
+            await gateway.unwatch(websocket, message.channel_id)
     return False
 
 
@@ -65,7 +72,7 @@ async def websocket_endpoint(
         async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
             while True:
                 raw = await websocket.receive_text()
-                if await handle_message(websocket, raw):
+                if await handle_message(websocket, raw, gateway, user):
                     heartbeat_deadline = (
                         websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
                     )

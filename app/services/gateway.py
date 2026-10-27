@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -10,11 +10,14 @@ from redis.exceptions import RedisError
 
 from app.clients.core_events import CORE_EVENTS, MAX_BACKOFF_SECONDS
 from app.core.codes import CloseCode
+from app.schemas.core import Memberships
 from app.schemas.core_events import (
     ChannelUpdatedData,
     CoreEvent,
     MembershipAction,
     MembershipChangedData,
+    TeamMemberAction,
+    TeamMemberChangedData,
     UserData,
 )
 from app.schemas.events import ChannelEvent
@@ -29,6 +32,11 @@ class Socket(Protocol):
     async def close(self, code: int = 1000, reason: str | None = None) -> None: ...
 
 
+class Watched(NamedTuple):
+    channel_id: uuid.UUID
+    team_id: uuid.UUID
+
+
 class Gateway:
     """One Redis subscription per process. Fans channel and core events out to local sockets."""
 
@@ -36,6 +44,7 @@ class Gateway:
         self._redis = redis
         self._connections = connections
         self._pubsub: PubSub | None = None  # None while Redis is down; run() fixes it
+        self._watching: dict[Socket, Watched] = {}  # at most one watched channel per socket
 
     async def connect(
         self, user_id: uuid.UUID, socket: Socket, channel_ids: list[uuid.UUID]
@@ -45,8 +54,38 @@ class Gateway:
         await self._subscribe(first)
 
     async def disconnect(self, user_id: uuid.UUID, socket: Socket) -> None:
+        self._watching.pop(socket, None)
         self._connections.remove(user_id, socket)
         await self._unsubscribe(self._connections.leave_all(socket))
+
+    async def watch(self, socket: Socket, user: Memberships, channel_id: uuid.UUID) -> bool:
+        """False when the channel isn't public in one of the user's teams (cannot_watch)."""
+        # shortcut: user is the memberships loaded at connect, so someone removed from a team
+        # can still start a watch on its channels until they reconnect; reload them if it matters.
+        team_id = next(
+            (team.team_id for team in user.teams if channel_id in team.public_channel_ids), None
+        )
+        if team_id is None:
+            return False
+        watched = self._watching.get(socket)
+        if watched is not None and watched.channel_id == channel_id:
+            return True  # already watching it
+        if socket in self._connections.in_channel(channel_id):
+            return True  # already a member: its events arrive anyway, and unwatch mustn't leave
+        await self.unwatch(socket)  # one per socket: the new watch replaces the old one
+        self._watching[socket] = Watched(channel_id, team_id)
+        if self._connections.join(socket, channel_id):
+            await self._subscribe([channel_id])
+        return True
+
+    async def unwatch(self, socket: Socket, channel_id: uuid.UUID | None = None) -> None:
+        """Ends the socket's watch. With channel_id, only if it is that channel."""
+        watched = self._watching.get(socket)
+        if watched is None or channel_id not in (None, watched.channel_id):
+            return
+        del self._watching[socket]
+        if self._connections.leave(socket, watched.channel_id):
+            await self._unsubscribe([watched.channel_id])
 
     async def run(self) -> None:
         """Runs until cancelled. After a Redis drop, subscribes again to what the registry has."""
@@ -94,6 +133,13 @@ class Gateway:
                     data = UserData.model_validate(event.data)
                     for socket in list(self._connections.sockets(data.user_id)):
                         await self._close(socket, CloseCode.USER_INACTIVE, "user_inactive")
+                case "team.member.changed":
+                    data = TeamMemberChangedData.model_validate(event.data)
+                    if data.action in (TeamMemberAction.LEFT, TeamMemberAction.REMOVED):
+                        for socket in list(self._connections.sockets(data.user_id)):
+                            watched = self._watching.get(socket)
+                            if watched is not None and watched.team_id == data.team_id:
+                                await self.unwatch(socket)
                 # other types: nothing for the gateway; the cache listener logs unknown ones
         except ValidationError:
             logger.warning("Ignoring malformed core event: %.200s", raw)
@@ -104,6 +150,10 @@ class Gateway:
             first = [self._connections.join(socket, data.channel_id) for socket in sockets]
             if any(first):
                 await self._subscribe([data.channel_id])
+            for socket in sockets:
+                watched = self._watching.get(socket)
+                if watched is not None and watched.channel_id == data.channel_id:
+                    del self._watching[socket]  # the watch becomes a normal subscription
         elif data.action == MembershipAction.REMOVED:
             last = [self._connections.leave(socket, data.channel_id) for socket in sockets]
             if any(last):

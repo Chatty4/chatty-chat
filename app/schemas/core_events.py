@@ -11,6 +11,13 @@ class MembershipAction(StrEnum):
     SETTINGS = "settings"
 
 
+class TeamMemberAction(StrEnum):
+    JOINED = "joined"
+    LEFT = "left"
+    REMOVED = "removed"
+    ROLE_CHANGED = "role_changed"
+
+
 class CoreEvent(BaseModel):
     """The envelope on core.events (core-events.md). Unknown fields are ignored"""
 
@@ -38,3 +45,8 @@ class ChannelUpdatedData(ChannelData):
     name: str
     topic: str | None
     archived: bool
+
+
+class TeamMemberChangedData(UserData):
+    team_id: uuid.UUID
+    action: TeamMemberAction
