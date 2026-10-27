@@ -23,4 +23,5 @@ EXPOSE 8001
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Clients only send heartbeat and watch frames (under 200 bytes); the default allows 16 MB.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--ws-max-size", "4096"]
