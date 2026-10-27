@@ -74,7 +74,12 @@ async def websocket_endpoint(
     try:
         async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
             while True:
-                raw = await websocket.receive_text()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(message.get("code", 1000))
+                raw = message.get("text")
+                if raw is None:
+                    continue  # a binary frame: ignored like any invalid message
                 if await handle_message(websocket, raw, gateway, user):
                     heartbeat_deadline = (
                         websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS

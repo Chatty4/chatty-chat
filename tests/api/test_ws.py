@@ -110,6 +110,17 @@ def test_core_down_at_connect_closes_with_1011(app, ws_client, make_token):
     assert close_code(ws_client, f"{URL}?token={token}") == 1011
 
 
+def test_a_binary_frame_is_ignored_and_the_socket_stays_open(app, ws_client, make_token):
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
+        ws.send_bytes(b"\x00")
+        ws.send_json({"type": "watch", "channel_id": str(uuid.uuid4())})
+
+        assert ws.receive_json()["code"] == "cannot_watch"
+
+
 def test_socket_is_registered_while_open_and_removed_after(app, ws_client, registry, make_token):
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
     token = make_token(sub=str(USER_ID))
