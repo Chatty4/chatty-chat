@@ -20,6 +20,7 @@ from app.schemas.core import Memberships
 from app.services.access_service import AccessService
 from app.services.connection_registry import ConnectionRegistry
 from app.services.event_bus import EventBus
+from app.services.gateway import Gateway
 from app.services.health_service import HealthService
 from app.services.message_service import MessageService
 
@@ -93,3 +94,10 @@ def get_message_service(
 
 
 MessageServiceDep = Annotated[MessageService, Depends(get_message_service)]
+
+
+def get_gateway(conn: HTTPConnection) -> Gateway:
+    return conn.app.state.gateway
+
+
+GatewayDep = Annotated[Gateway, Depends(get_gateway)]

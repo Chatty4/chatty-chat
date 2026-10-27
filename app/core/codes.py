@@ -1,4 +1,4 @@
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 
 class ErrorCode(StrEnum):
@@ -30,3 +30,11 @@ class ErrorCode(StrEnum):
     MESSAGE_DELETED = "message_deleted"
     PIN_LIMIT_REACHED = "pin_limit_reached"
     GAP_TOO_LARGE = "gap_too_large"
+
+
+class CloseCode(IntEnum):
+    """api-chat.md, GET /ws, close codes"""
+
+    TOKEN_EXPIRED = 4001
+    HEARTBEAT_TIMEOUT = 4002
+    USER_INACTIVE = 4003

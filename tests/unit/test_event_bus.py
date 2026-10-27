@@ -6,7 +6,7 @@ import pytest
 from redis.exceptions import RedisError
 
 from app.schemas.events import ChannelEvent
-from app.services.event_bus import EventBus, _channel_name
+from app.services.event_bus import EventBus, channel_name
 
 
 async def _aiter(items):
@@ -47,7 +47,7 @@ async def test_publish_serialises_to_correct_channel(bus, redis):
 
     await bus.publish(cid, event)
 
-    redis.publish.assert_called_once_with(_channel_name(cid), json.dumps(event))
+    redis.publish.assert_called_once_with(channel_name(cid), json.dumps(event))
 
 
 async def test_publish_does_not_raise_on_redis_error(bus, redis):
@@ -66,8 +66,8 @@ async def test_subscribe_yields_parsed_envelope(bus, redis):
     }
     redis.pubsub.return_value = make_pubsub(
         [
-            {"type": "subscribe", "channel": _channel_name(cid), "data": 1},
-            {"type": "message", "channel": _channel_name(cid), "data": json.dumps(raw)},
+            {"type": "subscribe", "channel": channel_name(cid), "data": 1},
+            {"type": "message", "channel": channel_name(cid), "data": json.dumps(raw)},
         ]
     )
 
@@ -91,7 +91,7 @@ async def test_subscribe_ignores_unknown_fields(bus, redis):
     }
     redis.pubsub.return_value = make_pubsub(
         [
-            {"type": "message", "channel": _channel_name(cid), "data": json.dumps(raw)},
+            {"type": "message", "channel": channel_name(cid), "data": json.dumps(raw)},
         ]
     )
 
@@ -110,8 +110,8 @@ async def test_subscribe_skips_malformed_message(bus, redis):
     }
     redis.pubsub.return_value = make_pubsub(
         [
-            {"type": "message", "channel": _channel_name(cid), "data": "not-json{{{"},
-            {"type": "message", "channel": _channel_name(cid), "data": json.dumps(valid)},
+            {"type": "message", "channel": channel_name(cid), "data": "not-json{{{"},
+            {"type": "message", "channel": channel_name(cid), "data": json.dumps(valid)},
         ]
     )
 
@@ -131,9 +131,9 @@ async def test_subscribe_skips_non_message_types(bus, redis):
     }
     redis.pubsub.return_value = make_pubsub(
         [
-            {"type": "subscribe", "channel": _channel_name(cid), "data": 1},
-            {"type": "unsubscribe", "channel": _channel_name(cid), "data": 0},
-            {"type": "message", "channel": _channel_name(cid), "data": json.dumps(raw)},
+            {"type": "subscribe", "channel": channel_name(cid), "data": 1},
+            {"type": "unsubscribe", "channel": channel_name(cid), "data": 0},
+            {"type": "message", "channel": channel_name(cid), "data": json.dumps(raw)},
         ]
     )
 
@@ -150,5 +150,5 @@ async def test_subscribe_cleans_up_on_exit(bus, redis):
     async for _ in bus.subscribe([cid]):
         pass
 
-    pubsub.unsubscribe.assert_called_once_with(_channel_name(cid))
+    pubsub.unsubscribe.assert_called_once_with(channel_name(cid))
     pubsub.aclose.assert_called_once()

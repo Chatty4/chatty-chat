@@ -13,7 +13,7 @@ from app.schemas.events import ChannelEvent
 logger = logging.getLogger(__name__)
 
 
-def _channel_name(channel_id: uuid.UUID) -> str:
+def channel_name(channel_id: uuid.UUID) -> str:
     """
     Per-channel pub/sub so each gateway subscribes only to the channels
     its connected users are in, not the full event stream.
@@ -31,7 +31,7 @@ class EventBus:
         If Redis is down, log and move on.
         """
         try:
-            await self._redis.publish(_channel_name(channel_id), json.dumps(event))
+            await self._redis.publish(channel_name(channel_id), json.dumps(event))
         except RedisError:
             logger.exception("Failed to publish event for channel %s", channel_id)
 
@@ -41,7 +41,7 @@ class EventBus:
         Cancel the enclosing task when you want to stop.
         """
         pubsub: PubSub = self._redis.pubsub()
-        channels = [_channel_name(cid) for cid in channel_ids]
+        channels = [channel_name(cid) for cid in channel_ids]
 
         await pubsub.subscribe(*channels)
 

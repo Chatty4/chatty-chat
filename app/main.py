@@ -16,6 +16,7 @@ from app.clients.core_events import listen_core_events
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.services.connection_registry import ConnectionRegistry
+from app.services.gateway import Gateway
 
 
 @asynccontextmanager
@@ -33,13 +34,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     events_redis = Redis.from_url(
         settings.REDIS_URL, decode_responses=True, retry=Retry(NoBackoff(), 0)
     )
+    app.state.gateway = Gateway(events_redis, app.state.connections)
+    gateway_task = asyncio.create_task(app.state.gateway.run())
     events_task = asyncio.create_task(listen_core_events(events_redis))
     try:
         yield
     finally:
         events_task.cancel()
+        gateway_task.cancel()
         with suppress(asyncio.CancelledError):
             await events_task
+        with suppress(asyncio.CancelledError):
+            await gateway_task
         await events_redis.aclose()
         await app.state.core_http.aclose()
         await app.state.redis.aclose()

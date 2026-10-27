@@ -210,3 +210,20 @@ class MessageFakes:
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
         )
+
+
+class FakeSocket:
+    """Stands in for a WebSocket in the Gateway: records frames and the close, or raises `error`."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.frames: list[dict[str, Any]] = []
+        self.closed: tuple[int, str | None] | None = None
+        self._error = error
+
+    async def send_json(self, data: Any) -> None:
+        if self._error:
+            raise self._error
+        self.frames.append(data)
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.closed = (code, reason)

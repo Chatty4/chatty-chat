@@ -1,7 +1,14 @@
 import uuid
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
+
+
+class MembershipAction(StrEnum):
+    ADDED = "added"
+    REMOVED = "removed"
+    SETTINGS = "settings"
 
 
 class CoreEvent(BaseModel):
@@ -21,3 +28,13 @@ class ChannelData(BaseModel):
 
 class MembershipData(UserData, ChannelData):
     pass
+
+
+class MembershipChangedData(MembershipData):
+    action: MembershipAction
+
+
+class ChannelUpdatedData(ChannelData):
+    name: str
+    topic: str | None
+    archived: bool
