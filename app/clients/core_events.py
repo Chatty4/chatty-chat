@@ -5,7 +5,15 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.clients.core import CHANNEL_KEYS, MEMBERS_KEYS, channel_key, members_key
+from app.clients.core import (
+    ALL_VERSION,
+    CHANNEL_KEYS,
+    MEMBERS_KEYS,
+    VERSION_TTL_SECONDS,
+    channel_key,
+    members_key,
+    version_key,
+)
 from app.schemas.core_events import ChannelData, CoreEvent, MembershipData, UserData
 
 logger = logging.getLogger(__name__)
@@ -15,7 +23,26 @@ MAX_BACKOFF_SECONDS = 30
 SCAN_BATCH = 500
 
 
+async def mark_stale(redis: Redis, *keys: str) -> None:
+    """
+    Bump the versions before the DEL, in one transaction: an old answer written before is
+    deleted, one written after is refused.
+    """
+    async with redis.pipeline(transaction=True) as transaction:
+        for key in keys:
+            transaction.incr(version_key(key))
+            transaction.expire(version_key(key), VERSION_TTL_SECONDS)
+        transaction.delete(*keys)
+        await transaction.execute()
+
+
+async def mark_all_stale(redis: Redis) -> None:
+    """Refuses every cache write already in progress. Call it before deleting keys."""
+    await redis.incr(ALL_VERSION)
+
+
 async def delete_matching(redis: Redis, pattern: str) -> None:
+    # SCAN, never KEYS: KEYS blocks Redis while it walks every key.
     batch: list[str] = []
     async for key in redis.scan_iter(match=pattern, count=SCAN_BATCH):
         batch.append(key)
@@ -27,27 +54,28 @@ async def delete_matching(redis: Redis, pattern: str) -> None:
 
 
 async def clear_cache(redis: Redis) -> None:
+    await mark_all_stale(redis)  # first, so a write racing the scan is refused
     await delete_matching(redis, MEMBERS_KEYS)
     await delete_matching(redis, CHANNEL_KEYS)
 
 
 async def handle_event(redis: Redis, raw: str) -> None:
-    """Deletes the cache keys one event makes stale (api-internal.md, Caching)."""
+    """Marks the cache keys one event makes stale (api-internal.md, Caching)."""
     try:
         event = CoreEvent.model_validate_json(raw)
         match event.type:
             case "membership.changed":
                 data = MembershipData.model_validate(event.data)
-                await redis.delete(members_key(data.user_id), channel_key(data.channel_id))
+                await mark_stale(redis, members_key(data.user_id), channel_key(data.channel_id))
             case "team.member.changed" | "user.deactivated":
                 data = UserData.model_validate(event.data)
-                await redis.delete(members_key(data.user_id))
+                await mark_stale(redis, members_key(data.user_id))
             case "channel.updated":
                 data = ChannelData.model_validate(event.data)
-                await redis.delete(channel_key(data.channel_id))
+                await mark_stale(redis, channel_key(data.channel_id))
             case "team.deleted":
-                # Only team_id is sent. Team deletes are rare, so drop every channel key
-                # instead of reading each cached body to match its team_id.
+                # only team_id is sent, so the team's channels are unknown
+                await mark_all_stale(redis)
                 await delete_matching(redis, CHANNEL_KEYS)
             case _:
                 logger.warning("Ignoring core event of unknown type %r", event.type)
