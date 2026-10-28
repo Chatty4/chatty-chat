@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -95,3 +96,16 @@ async def test_duplicate_client_msg_id_is_idempotent(client, room, auth, bus, se
     assert retry.json() == first.json()  # same id, same seq: the original message
     assert await stored(sessions, room) == (1, [1], 1)  # no second message, no seq taken
     assert len(bus.published) == 1
+
+
+async def test_seq_no_gaps_under_concurrent_sends(client, room, auth, bus, sessions):
+    responses = await asyncio.gather(
+        *(send(client, room, auth, uuid.uuid4()) for _ in range(SENDS))
+    )
+
+    assert [r.status_code for r in responses] == [201] * SENDS
+    seqs = sorted(r.json()["seq"] for r in responses)
+    assert seqs == list(range(1, SENDS + 1))  # no gaps, no duplicates
+    assert len({r.json()["id"] for r in responses}) == SENDS
+    assert await stored(sessions, room) == (SENDS, seqs, SENDS)
+    assert sorted(event["seq"] for _, event in bus.published) == seqs
