@@ -11,6 +11,7 @@ from app.api.deps import get_core_client, get_event_bus
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.models import ChannelCounter, ChannelEvent, Message, ReadState
+from app.repositories import MessageRepository
 from app.schemas.core import CoreChannel
 from tests.fakes import FakeBus, FakeCore, channel, memberships
 
@@ -109,3 +110,32 @@ async def test_seq_no_gaps_under_concurrent_sends(client, room, auth, bus, sessi
     assert len({r.json()["id"] for r in responses}) == SENDS
     assert await stored(sessions, room) == (SENDS, seqs, SENDS)
     assert sorted(event["seq"] for _, event in bus.published) == seqs
+
+
+async def test_concurrent_duplicates_save_one_message(
+    client, room, auth, bus, sessions, monkeypatch
+):
+    """Both requests pass the retry lookup before either saves, like a double-click."""
+    original = MessageRepository.get_by_client_msg_id
+    both_looked_up = asyncio.Barrier(2)
+    lookups = 0
+
+    async def lookup_then_wait(self, author_id, client_msg_id):
+        nonlocal lookups
+        found = await original(self, author_id, client_msg_id)
+        lookups += 1
+        if lookups <= 2:  # the loser looks up a third time after its insert fails
+            await asyncio.wait_for(both_looked_up.wait(), 5)
+        return found
+
+    monkeypatch.setattr(MessageRepository, "get_by_client_msg_id", lookup_then_wait)
+    client_msg_id = uuid.uuid4()
+
+    responses = await asyncio.gather(
+        send(client, room, auth, client_msg_id), send(client, room, auth, client_msg_id)
+    )
+
+    assert sorted(r.status_code for r in responses) == [200, 201]
+    assert responses[0].json() == responses[1].json()
+    assert await stored(sessions, room) == (1, [1], 1)  # the loser's seq was rolled back
+    assert len(bus.published) == 1
