@@ -14,6 +14,7 @@ from app.schemas.core import Memberships
 from app.schemas.core_events import (
     ChannelUpdatedData,
     CoreEvent,
+    CoreEventType,
     MembershipAction,
     MembershipChangedData,
     TeamMemberAction,
@@ -131,17 +132,18 @@ class Gateway:
         try:
             event = CoreEvent.model_validate_json(raw)
             match event.type:
-                case "membership.changed":
+                case CoreEventType.MEMBERSHIP_CHANGED:
                     await self._membership_changed(MembershipChangedData.model_validate(event.data))
-                case "channel.updated":
+                case CoreEventType.CHANNEL_UPDATED:
                     data = ChannelUpdatedData.model_validate(event.data)
+                    # the WebSocket message type (api-chat.md), not the core event type
                     frame = {"type": "channel.updated"} | data.model_dump(mode="json")
                     await self._send_all(self._connections.in_channel(data.channel_id), frame)
-                case "user.deactivated":
+                case CoreEventType.USER_DEACTIVATED:
                     data = UserData.model_validate(event.data)
                     for socket in list(self._connections.sockets(data.user_id)):
                         await self._close(socket, CloseCode.USER_INACTIVE, "user_inactive")
-                case "team.member.changed":
+                case CoreEventType.TEAM_MEMBER_CHANGED:
                     data = TeamMemberChangedData.model_validate(event.data)
                     if data.action in (TeamMemberAction.LEFT, TeamMemberAction.REMOVED):
                         for socket in list(self._connections.sockets(data.user_id)):
