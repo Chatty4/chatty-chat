@@ -176,11 +176,11 @@ class MessageService:
             # one extra row tells whether an older page exists.
             rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
 
-            return MessageHistoryResponse(
-                messages=[to_message_response(message) for message in rows[:limit]],
-                has_more=len(rows) > limit,
-                last_seq=last_seq,
-            )
+        return MessageHistoryResponse(
+            messages=[to_message_response(message) for message in rows[:limit]],
+            has_more=len(rows) > limit,
+            last_seq=last_seq,
+        )
 
     def _retry(self, existing: Message, channel_id: uuid.UUID) -> MessageResponse:
         """The saved message for a retry. Its client_msg_id in another channel is a client bug."""
