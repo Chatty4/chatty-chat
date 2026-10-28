@@ -41,5 +41,11 @@ class MessageResponse(BaseModel):
     created_at: datetime
 
 
+class MessageHistoryResponse(BaseModel):
+    messages: list[MessageResponse]
+    has_more: bool
+    last_seq: int
+
+
 class EditMessageRequest(BaseModel):
     body: str = Field(max_length=4000)
