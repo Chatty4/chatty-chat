@@ -6,7 +6,7 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import Message
+from app.models import ChannelEvent, Message
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -17,6 +17,7 @@ from app.schemas.core import CoreChannel, Memberships, TeamMembership
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
+from app.services.sync_service import SyncService
 
 
 def memberships(
@@ -94,6 +95,17 @@ def saved_message(
         mentions=[],
         edited_at=None,
         deleted_at=None,
+        created_at=datetime.now(UTC),
+    )
+
+
+def saved_event(channel_id: uuid.UUID, seq: int) -> ChannelEvent:
+    """A channel event row as it comes back from the database."""
+    return ChannelEvent(
+        channel_id=channel_id,
+        seq=seq,
+        type="message.created",
+        payload={},
         created_at=datetime.now(UTC),
     )
 
@@ -267,6 +279,26 @@ class MessageFakes:
             cast(ReadStateRepository, self.read_state),
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
+        )
+
+
+class SyncFakes:
+    """A SyncService on fakes. `log` shows commit and rollback."""
+
+    def __init__(
+        self,
+        core: FakeCore,
+        stored: list[ChannelEvent] | None = None,
+        last_seqs: dict[uuid.UUID, int] | None = None,
+    ) -> None:
+        self.log: list[str] = []
+        self.events = FakeChannelEvents(stored)
+        self.counters = FakeCounters(per_channel=last_seqs)
+        self.service = SyncService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(ChannelEventRepository, self.events),
+            cast(ChannelCounterRepository, self.counters),
+            AccessService(cast(CoreClient, core)),
         )
 
 
