@@ -31,7 +31,7 @@ class TeamMemberAction(StrEnum):
 class CoreEvent(BaseModel):
     """The envelope on core.events (core-events.md). Unknown fields are ignored"""
 
-    type: str 
+    type: str
     data: dict[str, Any]
 
 
