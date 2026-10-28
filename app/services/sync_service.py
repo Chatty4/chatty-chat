@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,11 +46,17 @@ class SyncService:
         """The missed events of each channel. A channel the user can't read gets its own error."""
         channels: dict[uuid.UUID, ChannelSyncResult | ChannelSyncError] = {}
         readable: dict[uuid.UUID, int] = {}
-        for channel_id, after_seq in cursors.items():
-            try:
-                await self._access.check_can_read(user, channel_id)
-            except (NotFound, PermissionDenied) as exc:
-                channels[channel_id] = ChannelSyncError(error=str(exc.code))
+        # At the same time: each unknown channel is a chatty-core call, and 404s aren't cached.
+        # They use only the core client, never the session.
+        checks = await asyncio.gather(
+            *(self._access.check_can_read(user, channel_id) for channel_id in cursors),
+            return_exceptions=True,
+        )
+        for (channel_id, after_seq), check in zip(cursors.items(), checks, strict=True):
+            if isinstance(check, NotFound | PermissionDenied):
+                channels[channel_id] = ChannelSyncError(error=str(check.code))
+            elif isinstance(check, BaseException):
+                raise check  # core_unavailable and the like fail the whole request, as before
             else:
                 readable[channel_id] = after_seq
 
