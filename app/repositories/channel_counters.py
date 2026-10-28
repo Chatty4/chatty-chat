@@ -1,5 +1,6 @@
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,3 +28,8 @@ class ChannelCounterRepository:
         )
 
         return (await self._session.execute(stmt)).scalar_one()
+
+    async def get_last_seq(self, channel_id: uuid.UUID) -> int:
+        """0 for a channel without a message: the first next_seq creates its row."""
+        stmt = select(ChannelCounter.last_seq).where(ChannelCounter.channel_id == channel_id)
+        return await self._session.scalar(stmt) or 0

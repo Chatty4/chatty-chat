@@ -80,3 +80,13 @@ class MessageRepository:
             .execution_options(populate_existing=True)
         )
         return (await self._session.scalars(stmt)).one_or_none()
+
+    async def list_messages_before(
+        self, channel_id: uuid.UUID, before_seq: int | None, limit: int
+    ) -> list[Message]:
+        """Newest first: the messages with seq < before_seq, or the newest ones without it."""
+        stmt = select(Message).where(Message.channel_id == channel_id)
+        if before_seq is not None:
+            stmt = stmt.where(Message.seq < before_seq)
+        stmt = stmt.order_by(Message.seq.desc()).limit(limit)
+        return list(await self._session.scalars(stmt))
