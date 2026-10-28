@@ -23,6 +23,7 @@ from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
 from app.services.health_service import HealthService
 from app.services.message_service import MessageService
+from app.services.sync_service import SyncService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -101,3 +102,12 @@ def get_gateway(conn: HTTPConnection) -> Gateway:
 
 
 GatewayDep = Annotated[Gateway, Depends(get_gateway)]
+
+
+def get_sync_service(session: SessionDep, access: AccessServiceDep) -> SyncService:
+    return SyncService(
+        session, ChannelEventRepository(session), ChannelCounterRepository(session), access
+    )
+
+
+SyncServiceDep = Annotated[SyncService, Depends(get_sync_service)]

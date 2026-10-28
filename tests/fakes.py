@@ -6,7 +6,7 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import Message
+from app.models import ChannelEvent, Message
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -17,6 +17,7 @@ from app.schemas.core import CoreChannel, Memberships, TeamMembership
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
+from app.services.sync_service import SyncService
 
 
 def memberships(
@@ -94,6 +95,17 @@ def saved_message(
         mentions=[],
         edited_at=None,
         deleted_at=None,
+        created_at=datetime.now(UTC),
+    )
+
+
+def saved_event(channel_id: uuid.UUID, seq: int) -> ChannelEvent:
+    """A channel event row as it comes back from the database."""
+    return ChannelEvent(
+        channel_id=channel_id,
+        seq=seq,
+        type="message.created",
+        payload={},
         created_at=datetime.now(UTC),
     )
 
@@ -204,25 +216,37 @@ class FakeMessages:
 
 
 class FakeCounters:
-    def __init__(self, last_seq: int = 0) -> None:
+    """`per_channel` gives get_last_seq a value per channel; otherwise it returns last_seq."""
+
+    def __init__(self, last_seq: int = 0, per_channel: dict[uuid.UUID, int] | None = None) -> None:
         self.last_seq = last_seq
+        self.per_channel = per_channel or {}
 
     async def next_seq(self, channel_id: uuid.UUID) -> int:
         self.last_seq += 1
         return self.last_seq
 
     async def get_last_seq(self, channel_id: uuid.UUID) -> int:
-        return self.last_seq
+        return self.per_channel.get(channel_id, self.last_seq)
 
 
 class FakeChannelEvents:
-    def __init__(self) -> None:
+    """`rows` are the inserted events; `stored` are what list_events_after finds."""
+
+    def __init__(self, stored: list[ChannelEvent] | None = None) -> None:
         self.rows: list[tuple[uuid.UUID, int, str, dict[str, Any]]] = []
+        self.stored = stored or []
 
     async def insert_channel_event(
         self, channel_id: uuid.UUID, seq: int, event_type: str, payload: dict[str, Any]
     ) -> None:
         self.rows.append((channel_id, seq, event_type, payload))
+
+    async def list_events_after(
+        self, channel_id: uuid.UUID, after_seq: int, limit: int
+    ) -> list[ChannelEvent]:
+        rows = [e for e in self.stored if e.channel_id == channel_id and e.seq > after_seq]
+        return sorted(rows, key=lambda event: event.seq)[:limit]
 
 
 class FakeReadState:
@@ -267,6 +291,26 @@ class MessageFakes:
             cast(ReadStateRepository, self.read_state),
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
+        )
+
+
+class SyncFakes:
+    """A SyncService on fakes. `log` shows commit and rollback."""
+
+    def __init__(
+        self,
+        core: FakeCore,
+        stored: list[ChannelEvent] | None = None,
+        last_seqs: dict[uuid.UUID, int] | None = None,
+    ) -> None:
+        self.log: list[str] = []
+        self.events = FakeChannelEvents(stored)
+        self.counters = FakeCounters(per_channel=last_seqs)
+        self.service = SyncService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(ChannelEventRepository, self.events),
+            cast(ChannelCounterRepository, self.counters),
+            AccessService(cast(CoreClient, core)),
         )
 
 
