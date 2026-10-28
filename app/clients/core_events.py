@@ -14,7 +14,13 @@ from app.clients.core import (
     members_key,
     version_key,
 )
-from app.schemas.core_events import ChannelData, CoreEvent, MembershipData, UserData
+from app.schemas.core_events import (
+    ChannelData,
+    CoreEvent,
+    CoreEventType,
+    MembershipData,
+    UserData,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +70,16 @@ async def handle_event(redis: Redis, raw: str) -> None:
     try:
         event = CoreEvent.model_validate_json(raw)
         match event.type:
-            case "membership.changed":
+            case CoreEventType.MEMBERSHIP_CHANGED:
                 data = MembershipData.model_validate(event.data)
                 await mark_stale(redis, members_key(data.user_id), channel_key(data.channel_id))
-            case "team.member.changed" | "user.deactivated":
+            case CoreEventType.TEAM_MEMBER_CHANGED | CoreEventType.USER_DEACTIVATED:
                 data = UserData.model_validate(event.data)
                 await mark_stale(redis, members_key(data.user_id))
-            case "channel.updated":
+            case CoreEventType.CHANNEL_UPDATED:
                 data = ChannelData.model_validate(event.data)
                 await mark_stale(redis, channel_key(data.channel_id))
-            case "team.deleted":
+            case CoreEventType.TEAM_DELETED:
                 # only team_id is sent, so the team's channels are unknown
                 await mark_all_stale(redis)
                 await delete_matching(redis, CHANNEL_KEYS)

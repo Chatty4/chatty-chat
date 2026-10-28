@@ -5,6 +5,16 @@ from typing import Any
 from pydantic import BaseModel
 
 
+class CoreEventType(StrEnum):
+    """The event types on core.events (core-events.md)."""
+
+    MEMBERSHIP_CHANGED = "membership.changed"
+    TEAM_MEMBER_CHANGED = "team.member.changed"
+    CHANNEL_UPDATED = "channel.updated"
+    TEAM_DELETED = "team.deleted"
+    USER_DEACTIVATED = "user.deactivated"
+
+
 class MembershipAction(StrEnum):
     ADDED = "added"
     REMOVED = "removed"
@@ -21,7 +31,7 @@ class TeamMemberAction(StrEnum):
 class CoreEvent(BaseModel):
     """The envelope on core.events (core-events.md). Unknown fields are ignored"""
 
-    type: str
+    type: str 
     data: dict[str, Any]
 
 
