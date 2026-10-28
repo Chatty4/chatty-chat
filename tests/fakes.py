@@ -216,25 +216,37 @@ class FakeMessages:
 
 
 class FakeCounters:
-    def __init__(self, last_seq: int = 0) -> None:
+    """`per_channel` gives get_last_seq a value per channel; otherwise it returns last_seq."""
+
+    def __init__(self, last_seq: int = 0, per_channel: dict[uuid.UUID, int] | None = None) -> None:
         self.last_seq = last_seq
+        self.per_channel = per_channel or {}
 
     async def next_seq(self, channel_id: uuid.UUID) -> int:
         self.last_seq += 1
         return self.last_seq
 
     async def get_last_seq(self, channel_id: uuid.UUID) -> int:
-        return self.last_seq
+        return self.per_channel.get(channel_id, self.last_seq)
 
 
 class FakeChannelEvents:
-    def __init__(self) -> None:
+    """`rows` are the inserted events; `stored` are what list_events_after finds."""
+
+    def __init__(self, stored: list[ChannelEvent] | None = None) -> None:
         self.rows: list[tuple[uuid.UUID, int, str, dict[str, Any]]] = []
+        self.stored = stored or []
 
     async def insert_channel_event(
         self, channel_id: uuid.UUID, seq: int, event_type: str, payload: dict[str, Any]
     ) -> None:
         self.rows.append((channel_id, seq, event_type, payload))
+
+    async def list_events_after(
+        self, channel_id: uuid.UUID, after_seq: int, limit: int
+    ) -> list[ChannelEvent]:
+        rows = [e for e in self.stored if e.channel_id == channel_id and e.seq > after_seq]
+        return sorted(rows, key=lambda event: event.seq)[:limit]
 
 
 class FakeReadState:
