@@ -1,9 +1,10 @@
+import asyncio
 import uuid
 
 import pytest
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ServiceUnavailable
 from app.schemas.core import CoreChannel, TeamMembership
 from app.schemas.sync import ChannelSyncError, ChannelSyncResult
 from tests.fakes import FakeCore, SyncFakes, channel, memberships, saved_event
@@ -77,6 +78,37 @@ async def test_a_channel_the_user_cannot_read_gets_its_own_error(room, code):
 
     assert response.channels[other] == ChannelSyncError(error=code)
     assert [event.seq for event in result(response, A).events] == [2]
+
+
+class _BarrierCore(FakeCore):
+    """get_channel returns only once `parties` calls are waiting, so sequential checks hang."""
+
+    def __init__(self, parties: int) -> None:
+        super().__init__()
+        self._barrier = asyncio.Barrier(parties)
+
+    async def get_channel(self, channel_id: uuid.UUID) -> CoreChannel | None:
+        await self._barrier.wait()
+        return None
+
+
+async def test_unknown_channels_are_checked_at_the_same_time():
+    unknown = [uuid.uuid4() for _ in range(3)]
+    fakes = SyncFakes(_BarrierCore(len(unknown)), [saved_event(A, 1)], {A: 1})
+
+    async with asyncio.timeout(1):
+        response = await fakes.service.sync(USER, {A: 0, **dict.fromkeys(unknown, 0)})
+
+    for channel_id in unknown:
+        assert response.channels[channel_id] == ChannelSyncError(error=ErrorCode.CHANNEL_NOT_FOUND)
+    assert [event.seq for event in result(response, A).events] == [1]
+
+
+async def test_core_unavailable_fails_the_whole_sync():
+    fakes = SyncFakes(FakeCore(error=ServiceUnavailable()), [], {A: 0})
+
+    with pytest.raises(ServiceUnavailable):
+        await fakes.service.sync(USER, {A: 0, uuid.uuid4(): 0})
 
 
 async def test_events_page_with_has_more():
