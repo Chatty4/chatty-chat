@@ -192,6 +192,16 @@ class FakeMessages:
         self.inserted.append(message)
         return message
 
+    async def list_messages_before(
+        self, channel_id: uuid.UUID, before_seq: int | None, limit: int
+    ) -> list[Message]:
+        rows = [
+            message
+            for message in self._stored.values()
+            if message.channel_id == channel_id and (before_seq is None or message.seq < before_seq)
+        ]
+        return sorted(rows, key=lambda message: message.seq, reverse=True)[:limit]
+
 
 class FakeCounters:
     def __init__(self, last_seq: int = 0) -> None:
@@ -199,6 +209,9 @@ class FakeCounters:
 
     async def next_seq(self, channel_id: uuid.UUID) -> int:
         self.last_seq += 1
+        return self.last_seq
+
+    async def get_last_seq(self, channel_id: uuid.UUID) -> int:
         return self.last_seq
 
 

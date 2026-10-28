@@ -1,9 +1,15 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import CurrentUser, MessageServiceDep
-from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
+from app.schemas.messages import (
+    EditMessageRequest,
+    MessageHistoryResponse,
+    MessageResponse,
+    SendMessageRequest,
+)
 
 router = APIRouter()
 
@@ -24,6 +30,17 @@ async def send_message(
     if not created:
         response.status_code = status.HTTP_200_OK  # a retry returns the original
     return message
+
+
+@router.get("/channels/{channel_id}/messages", response_model=MessageHistoryResponse)
+async def list_messages(
+    channel_id: uuid.UUID,
+    user: CurrentUser,
+    service: MessageServiceDep,
+    before_seq: Annotated[int | None, Query(ge=1)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> MessageHistoryResponse:
+    return await service.list_history(user, channel_id, before_seq, limit)
 
 
 @router.put("/messages/{message_id}", response_model=MessageResponse)
