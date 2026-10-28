@@ -23,7 +23,12 @@ from app.repositories import (
 )
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent, EventType
-from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
+from app.schemas.messages import (
+    EditMessageRequest,
+    MessageHistoryResponse,
+    MessageResponse,
+    SendMessageRequest,
+)
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 
@@ -155,6 +160,27 @@ class MessageService:
 
         await self._publish(EventType.MESSAGE_CREATED, channel_id, seq, message.created_at, payload)
         return response, True
+
+    async def list_history(
+        self, user: Memberships, channel_id: uuid.UUID, before_seq: int | None, limit: int
+    ) -> MessageHistoryResponse:
+        """A page of messages, newest first. Deleted ones are included so the order is kept."""
+        await self._access.check_can_read(user, channel_id)
+
+        async with self._session.begin():
+            # last_seq first: a message saved between the two reads then comes in this page and
+            # again from /sync (dropped by seq), instead of being missed by both
+
+            last_seq = await self._counters.get_last_seq(channel_id)
+
+            # one extra row tells whether an older page exists.
+            rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
+
+            return MessageHistoryResponse(
+                messages=[to_message_response(message) for message in rows[:limit]],
+                has_more=len(rows) > limit,
+                last_seq=last_seq,
+            )
 
     def _retry(self, existing: Message, channel_id: uuid.UUID) -> MessageResponse:
         """The saved message for a retry. Its client_msg_id in another channel is a client bug."""
