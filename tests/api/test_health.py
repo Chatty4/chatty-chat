@@ -17,27 +17,32 @@ def use_fake(app, **results) -> None:
 async def test_health_returns_200_when_db_and_redis_are_ok(app, client):
     use_fake(
         app,
-        health=HealthResponse(status=HealthStatus.OK, db=CheckStatus.OK, redis=CheckStatus.OK),
+        health=HealthResponse(
+            status=HealthStatus.OK, db=CheckStatus.OK, redis=CheckStatus.OK, tasks=CheckStatus.OK
+        ),
     )
 
     response = await client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "db": "ok", "redis": "ok"}
+    assert response.json() == {"status": "ok", "db": "ok", "redis": "ok", "tasks": "ok"}
 
 
 async def test_health_returns_503_when_db_is_down(app, client):
     use_fake(
         app,
         health=HealthResponse(
-            status=HealthStatus.DEGRADED, db=CheckStatus.ERROR, redis=CheckStatus.OK
+            status=HealthStatus.DEGRADED,
+            db=CheckStatus.ERROR,
+            redis=CheckStatus.OK,
+            tasks=CheckStatus.OK,
         ),
     )
 
     response = await client.get("/health")
 
     assert response.status_code == 503
-    assert response.json() == {"status": "degraded", "db": "error", "redis": "ok"}
+    assert response.json() == {"status": "degraded", "db": "error", "redis": "ok", "tasks": "ok"}
 
 
 async def test_health_db_endpoint_is_gone(app, client):

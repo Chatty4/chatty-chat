@@ -55,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.gateway = Gateway(events_redis, app.state.connections)
     gateway_task = asyncio.create_task(app.state.gateway.run(), name="gateway")
     events_task = asyncio.create_task(listen_core_events(events_redis), name="core events")
+    app.state.background_tasks = (gateway_task, events_task)
     gateway_task.add_done_callback(log_crash)
     events_task.add_done_callback(log_crash)
     try:
