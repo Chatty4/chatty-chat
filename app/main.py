@@ -43,6 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.connections = ConnectionRegistry()
     # pubsub.listen() still blocks without a timeout; these apply to the other commands.
+    # redis-py 8.1 turns on TCP keepalive by default (30s idle, 5s, 3 tries), so a silently
+    # dorpped connection fails in about 45s and the retry loops reconnect.
     events_redis = Redis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
