@@ -7,7 +7,10 @@ from pydantic import AfterValidator, BaseModel, Field
 
 
 def check_emoji(value: str) -> str:
-    """One emoji (👍, 👍🏽, 👨‍👩‍👧), max 32 bytes (api-chat.md). Otherwise 400 {"emoji": "invalid"}."""
+    """
+    One emoji (👍, 👍🏽, 👨‍👩‍👧), max 32 bytes (api-chat.md).
+    Otherwise 400 {"emoji": "invalid"}.
+    """
     if len(value.encode()) > 32 or not emoji_lib.is_emoji(value):
         raise ValueError("not one emoji")
     return value

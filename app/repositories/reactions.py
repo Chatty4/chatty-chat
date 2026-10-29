@@ -1,5 +1,4 @@
 import uuid
-from collections.abc import Sequence
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -29,7 +28,7 @@ class ReactionRepository:
 
     async def list_reactions(
         self, message_id: uuid.UUID, user_id: uuid.UUID
-    ) -> Sequence[tuple[str, int, bool]]:
+    ) -> list[tuple[str, int, bool]]:
         """(emoji, count, me) per emoji, in the order the emoji were first used."""
         stmt = (
             select(Reaction.emoji, func.count(), func.bool_or(Reaction.user_id == user_id))
@@ -37,4 +36,4 @@ class ReactionRepository:
             .group_by(Reaction.emoji)
             .order_by(func.min(Reaction.created_at))
         )
-        return (await self._session.execute(stmt)).tuples().all()
+        return [(emoji, count, me) for emoji, count, me in await self._session.execute(stmt)]
