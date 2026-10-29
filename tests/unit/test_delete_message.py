@@ -71,6 +71,7 @@ async def test_author_deletes_their_message():
 
     assert fakes.counters.last_seq == 8
     assert_deleted(fakes, message, USER)
+    assert fakes.events.cleared == [(message.channel_id, 3, message.id)]  # its own seq, not 8
 
 
 async def test_channel_owner_deletes_someone_elses_message():
@@ -180,6 +181,7 @@ async def test_already_deleted_message_is_204_without_an_event():
 
     assert fakes.counters.last_seq == 0
     assert fakes.events.rows == []
+    assert fakes.events.cleared == []  # cleared by the first delete
     assert fakes.log == ["commit"]  # only the read
     assert fakes.bus.published == []
 

@@ -16,7 +16,7 @@ from app.repositories import (
     ReadStateRepository,
 )
 from app.schemas.core import CoreChannel
-from app.schemas.messages import MessageResponse, SendMessageRequest
+from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
@@ -69,6 +69,13 @@ async def delete_message(sessions, room: CoreChannel, bus: FakeBus, message_id: 
         await service(session, room, bus).delete(USER, message_id)
 
 
+async def edit_message(sessions, room: CoreChannel, message_id: uuid.UUID, body: str) -> None:
+    async with sessions() as session:
+        await service(session, room, FakeBus()).edit(
+            USER, message_id, EditMessageRequest(body=body)
+        )
+
+
 async def event_rows(sessions, channel_id: uuid.UUID):
     async with sessions() as session:
         return (
@@ -107,6 +114,28 @@ async def test_delete_clears_the_row_and_takes_the_next_seq(sessions, room):
     assert events[1].payload["message_id"] == str(sent.id)
     assert events[1].payload["deleted_by"] == str(USER_ID)
     assert [event["seq"] for _, event in bus.published] == [2]
+
+
+async def test_delete_clears_the_text_in_earlier_events(sessions, room):
+    kept = await send(sessions, room)
+    sent = await send(sessions, room)
+    await edit_message(sessions, room, sent.id, f"secret <@{OTHER_ID}>")
+
+    await delete_message(sessions, room, FakeBus(), sent.id)
+
+    events = await event_rows(sessions, room.channel_id)  # a new session: what is stored
+    assert [kind for _, kind, _ in events] == [
+        "message.created",
+        "message.created",
+        "message.edited",
+        "message.deleted",
+    ]
+    kept_created, created, edited, deleted = (payload for _, _, payload in events)
+    assert (created["message"]["body"], created["message"]["mentions"]) == ("", [])
+    assert (edited["body"], edited["mentions"]) == ("", [])
+    assert "body" not in deleted  # message.deleted is left as it was
+    assert kept_created["message"]["id"] == str(kept.id)
+    assert kept_created["message"]["body"] == f"hi <@{OTHER_ID}>"  # other messages keep theirs
 
 
 async def test_second_delete_is_a_no_op(sessions, room):
