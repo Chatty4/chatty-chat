@@ -101,6 +101,18 @@ async def react(
         return await reaction_service(session, room, bus).add(user, message_id, emoji)
 
 
+async def unreact(
+    sessions,
+    room: CoreChannel,
+    bus: FakeBus,
+    user: Memberships,
+    message_id: uuid.UUID,
+    emoji: str = "👍",
+) -> ReactionsResponse:
+    async with sessions() as session:
+        return await reaction_service(session, room, bus).remove(user, message_id, emoji)
+
+
 async def event_kinds(sessions, channel_id: uuid.UUID) -> list[str]:
     async with sessions() as session:
         return list(
@@ -209,3 +221,54 @@ async def test_reaction_racing_a_delete_never_lands_after_it(sessions, room):
     else:  # the reaction went first
         assert kinds == ["message.created", "reaction.added", "message.deleted"]
     assert results[1] is None
+
+
+async def test_remove_deletes_my_row_and_sends_reaction_removed(sessions, room):
+    sent = await send(sessions, room)
+    bus = FakeBus()
+    await react(sessions, room, bus, USER, sent.id)
+    await react(sessions, room, bus, OTHER, sent.id)
+
+    response = await unreact(sessions, room, bus, USER, sent.id)
+
+    assert [(r.emoji, r.count, r.me) for r in response.reactions] == [("👍", 1, False)]
+    assert await reaction_rows(sessions, sent.id) == [(OTHER_ID, "👍")]
+    assert await event_kinds(sessions, room.channel_id) == [
+        "message.created",
+        "reaction.added",
+        "reaction.added",
+        "reaction.removed",
+    ]
+    removed = bus.published[-1][1]
+    assert (removed["type"], removed["seq"]) == ("reaction.removed", 4)
+    assert removed["payload"] == {
+        "message_id": str(sent.id),
+        "user_id": str(USER_ID),
+        "emoji": "👍",
+    }
+
+
+async def test_removing_a_reaction_i_dont_have_takes_no_seq(sessions, room):
+    sent = await send(sessions, room)
+    bus = FakeBus()
+
+    response = await unreact(sessions, room, bus, USER, sent.id)
+
+    assert response.reactions == []
+    assert await last_seq(sessions, room.channel_id) == 1  # rolled back
+    assert bus.published == []
+
+
+async def test_concurrent_removes_write_one_event(sessions, room):
+    sent = await send(sessions, room)
+    await react(sessions, room, FakeBus(), USER, sent.id)
+    bus = FakeBus()
+
+    await asyncio.gather(
+        unreact(sessions, room, bus, USER, sent.id),
+        unreact(sessions, room, bus, USER, sent.id),
+    )
+
+    assert await reaction_rows(sessions, sent.id) == []
+    assert await last_seq(sessions, room.channel_id) == 3  # created, added, removed
+    assert len(bus.published) == 1
