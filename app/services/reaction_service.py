@@ -22,6 +22,10 @@ class _AlreadyReacted(Exception):
     """Raised inside the transaction to roll back the seq it took."""
 
 
+class _NotReacted(Exception):
+    """Raised inside the transaction to roll back the seq it took."""
+
+
 class ReactionService:
     def __init__(
         self,
@@ -79,6 +83,47 @@ class ReactionService:
                     channel_id=message.channel_id,
                     seq=seq,
                     created_at=created_at,
+                    payload=payload,
+                )
+            )
+
+        return await self._list_reactions(message_id, user.user_id)
+
+    async def remove(
+        self, user: Memberships, message_id: uuid.UUID, emoji: str
+    ) -> ReactionsResponse:
+        """Remove my reaction. Takes the next seq and sends reaction.removed, only if I had it."""
+        message = await get_readable_message(
+            self._session, self._messages, self._access, user, message_id
+        )
+        await self._access.get_writable_channel(user, message.channel_id)
+
+        try:
+            async with self._session.begin():
+                seq = await self._counters.next_seq(message.channel_id)
+                removed_at = await self._reactions.remove_reaction(message_id, user.user_id, emoji)
+                if removed_at is None:
+                    raise _NotReacted
+
+                payload = {
+                    "message_id": str(message_id),
+                    "user_id": str(user.user_id),
+                    "emoji": emoji,
+                }
+                await self._events.insert_channel_event(
+                    message.channel_id, seq, EventType.REACTION_REMOVED, payload
+                )
+
+        except _NotReacted:
+            pass  # nothing changed: 200 without an event
+
+        else:
+            await self._bus.publish(
+                ChannelEvent(
+                    type=EventType.REACTION_REMOVED,
+                    channel_id=message.channel_id,
+                    seq=seq,
+                    created_at=removed_at,
                     payload=payload,
                 )
             )

@@ -16,3 +16,13 @@ async def add_reaction(
     service: ReactionServiceDep,
 ) -> ReactionsResponse:
     return await service.add(user, message_id, emoji)
+
+
+@router.delete("/messages/{message_id}/reactions/{emoji}", response_model=ReactionsResponse)
+async def remove_reaction(
+    message_id: uuid.UUID,
+    emoji: Emoji,
+    user: CurrentUser,
+    service: ReactionServiceDep,
+) -> ReactionsResponse:
+    return await service.remove(user, message_id, emoji)

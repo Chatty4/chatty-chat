@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,24 @@ class ReactionRepository:
                 index_elements=[Reaction.message_id, Reaction.user_id, Reaction.emoji]
             )
             .returning(Reaction.created_at)
+        )
+        return await self._session.scalar(stmt)
+
+    async def remove_reaction(
+        self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
+    ) -> datetime | None:
+        """
+        Delete the reaction. Returns the database time (the event's created_at), or None if the
+        user didn't have it. Two removes at once: the second one deletes nothing.
+        """
+        stmt = (
+            delete(Reaction)
+            .where(
+                Reaction.message_id == message_id,
+                Reaction.user_id == user_id,
+                Reaction.emoji == emoji,
+            )
+            .returning(func.now())
         )
         return await self._session.scalar(stmt)
 
