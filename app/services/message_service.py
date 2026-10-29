@@ -57,6 +57,29 @@ def extract_mentions(body: str, member_ids: set[uuid.UUID]) -> list[uuid.UUID]:
     return mentions
 
 
+async def get_readable_message(
+    session: AsyncSession,
+    messages: MessageRepository,
+    access: AccessService,
+    user: Memberships,
+    message_id: uuid.UUID,
+) -> Message:
+    """
+    The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
+    """
+    async with session.begin():
+        message = await messages.get_message(message_id)
+
+    if message is None:
+        raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
+
+    try:
+        await access.check_can_read(user, message.channel_id)
+    except (NotFound, PermissionDenied) as exc:
+        raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
+    return message
+
+
 def to_message_response(message: Message) -> MessageResponse:
     """The message object. Files come with CHAT-212, reactions and pins with CHAT-127."""
     return MessageResponse(
@@ -230,20 +253,9 @@ class MessageService:
         return response
 
     async def _get_readable_message(self, user: Memberships, message_id: uuid.UUID) -> Message:
-        """
-        The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
-        """
-        async with self._session.begin():
-            message = await self._messages.get_message(message_id)
-
-        if message is None:
-            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
-
-        try:
-            await self._access.check_can_read(user, message.channel_id)
-        except (NotFound, PermissionDenied) as exc:
-            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
-        return message
+        return await get_readable_message(
+            self._session, self._messages, self._access, user, message_id
+        )
 
     async def delete(self, user: Memberships, message_id: uuid.UUID) -> None:
         """Soft-delete a message (D-05). Takes the next seq and sends message.deleted."""
