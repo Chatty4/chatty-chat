@@ -14,6 +14,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    ReactionRepository,
     ReadStateRepository,
 )
 from app.schemas.core import Memberships
@@ -23,6 +24,7 @@ from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
 from app.services.health_service import HealthService
 from app.services.message_service import MessageService
+from app.services.reaction_service import ReactionService
 from app.services.sync_service import SyncService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -111,3 +113,20 @@ def get_sync_service(session: SessionDep, access: AccessServiceDep) -> SyncServi
 
 
 SyncServiceDep = Annotated[SyncService, Depends(get_sync_service)]
+
+
+def get_reaction_service(
+    session: SessionDep, access: AccessServiceDep, bus: EventBusDep
+) -> ReactionService:
+    return ReactionService(
+        session,
+        MessageRepository(session),
+        ReactionRepository(session),
+        ChannelCounterRepository(session),
+        ChannelEventRepository(session),
+        access,
+        bus,
+    )
+
+
+ReactionServiceDep = Annotated[ReactionService, Depends(get_reaction_service)]

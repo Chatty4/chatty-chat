@@ -1,7 +1,19 @@
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+import emoji as emoji_lib
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def check_emoji(value: str) -> str:
+    """One emoji (👍, 👍🏽, 👨‍👩‍👧), max 32 bytes (api-chat.md). Otherwise 400 {"emoji": "invalid"}."""
+    if len(value.encode()) > 32 or not emoji_lib.is_emoji(value):
+        raise ValueError("not one emoji")
+    return value
+
+
+Emoji = Annotated[str, AfterValidator(check_emoji)]
 
 
 class SendMessageRequest(BaseModel):
@@ -21,6 +33,13 @@ class ReactionResponse(BaseModel):
     emoji: str
     count: int
     me: bool
+
+
+class ReactionsResponse(BaseModel):
+    """The answer of PUT and DELETE reactions: every reaction of the message."""
+
+    message_id: uuid.UUID
+    reactions: list[ReactionResponse]
 
 
 class MessageResponse(BaseModel):
