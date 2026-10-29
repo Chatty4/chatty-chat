@@ -2,6 +2,7 @@ import asyncio
 import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocketState
 from pydantic import ValidationError
 
 from app.api.deps import AccessServiceDep, GatewayDep
@@ -86,7 +87,9 @@ async def websocket_endpoint(
                     )
                     timeout.reschedule(min(token_deadline, heartbeat_deadline))
     except TimeoutError:
-        if token_deadline <= heartbeat_deadline:
+        if websocket.application_state == WebSocketState.DISCONNECTED:
+            pass  # the gateway closed it already (too_slow); a second close raises
+        elif token_deadline <= heartbeat_deadline:
             await websocket.close(CloseCode.TOKEN_EXPIRED, "token_expired")
         else:
             await websocket.close(CloseCode.HEARTBEAT_TIMEOUT, "heartbeat_timeout")

@@ -47,3 +47,22 @@ def test_websocket_token_is_hidden_in_uvicorn_logs(caplog):
 
     assert "eyJhbGci" not in caplog.text
     assert '"WebSocket /api/chat/v1/ws?token=***&v=1" [accepted]' in caplog.text
+
+
+def test_token_is_hidden_in_the_access_log(caplog):
+    setup_logging("INFO", sql_echo=False)
+    access_logger = logging.getLogger("uvicorn.access")
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        # the same call uvicorn makes for a plain HTTP request
+        access_logger.info(
+            '%s - "%s %s HTTP/%s" %d',
+            "172.18.0.1:52344",
+            "GET",
+            "/api/chat/v1/ws?token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln",
+            "1.1",
+            404,
+        )
+
+    assert "eyJhbGci" not in caplog.text
+    assert len(caplog.records[-1].args) == 5  # uvicorn's access formatter unpacks all five
