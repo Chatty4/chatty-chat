@@ -259,6 +259,7 @@ class MessageService:
 
                 if deleted is None:  # deleted by another request after the check above
                     raise _DeletedMeanwhile
+                await self._events.clear_message_text(deleted.channel_id, deleted.seq, deleted.id)
                 # TODO(CHAT-127): remove the message's pins
 
                 payload = {
