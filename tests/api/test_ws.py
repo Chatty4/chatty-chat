@@ -204,6 +204,28 @@ def test_only_heartbeat_resets_the_timer(app, ws_client, make_token, monkeypatch
     assert closed.value.code == 4002
 
 
+def test_heartbeat_timeout_after_the_gateway_closed_the_socket_is_quiet(
+    app, ws_client, gateway, make_token, monkeypatch
+):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    use_core(app, FakeCore(memberships=memberships(USER_ID)))
+    connect = gateway.connect
+
+    async def connect_then_drop(user_id, socket, channel_ids):  # like _send's too_slow close
+        await connect(user_id, socket, channel_ids)
+        await socket.close(1001, "too_slow")
+
+    monkeypatch.setattr(gateway, "connect", connect_then_drop)
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+        time.sleep(1)  # the heartbeat timeout fires while the client is still connected
+
+    assert closed.value.code == 1001
+
+
 def fake_socket() -> SimpleNamespace:
     """Only state, no send_json: a test using it fails if handle_message sends anything."""
     return SimpleNamespace(state=SimpleNamespace())

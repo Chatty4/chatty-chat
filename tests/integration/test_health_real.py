@@ -16,7 +16,7 @@ async def test_health_against_real_db_and_redis():
     redis = Redis.from_url(settings.REDIS_URL)
     try:
         async with session_factory() as session:
-            service = HealthService(session, redis)
+            service = HealthService(session, redis, [])
             health = await service.check()
     finally:
         await redis.aclose()

@@ -43,6 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     app.state.connections = ConnectionRegistry()
     # pubsub.listen() still blocks without a timeout; these apply to the other commands.
+    # redis-py 8.1 turns on TCP keepalive by default (30s idle, 5s, 3 tries), so a silently
+    # dorpped connection fails in about 45s and the retry loops reconnect.
     events_redis = Redis.from_url(
         settings.REDIS_URL,
         decode_responses=True,
@@ -53,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.gateway = Gateway(events_redis, app.state.connections)
     gateway_task = asyncio.create_task(app.state.gateway.run(), name="gateway")
     events_task = asyncio.create_task(listen_core_events(events_redis), name="core events")
+    app.state.background_tasks = (gateway_task, events_task)
     gateway_task.add_done_callback(log_crash)
     events_task.add_done_callback(log_crash)
     try:

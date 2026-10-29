@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Sequence
 
 from redis.asyncio import Redis
 from sqlalchemy import text
@@ -14,18 +15,25 @@ PING_QUERY = text("SELECT 1")
 
 
 class HealthService:
-    def __init__(self, session: AsyncSession, redis: Redis) -> None:
+    def __init__(self, session: AsyncSession, redis: Redis, tasks: Sequence[asyncio.Task]) -> None:
         self._session = session
         self._redis = redis
+        self._tasks = tasks
 
     async def check(self) -> HealthResponse:
         db, redis = await asyncio.gather(self._check_database(), self._check_redis())
-        healthy = db is CheckStatus.OK and redis is CheckStatus.OK
+        tasks = self._check_tasks()
+        healthy = CheckStatus.ERROR not in (db, redis, tasks)
         return HealthResponse(
             status=HealthStatus.OK if healthy else HealthStatus.DEGRADED,
             db=db,
             redis=redis,
+            tasks=tasks,
         )
+
+    def _check_tasks(self) -> CheckStatus:
+        """The gateway and the core-event listener run until shutdown; done means crashed."""
+        return CheckStatus.ERROR if any(task.done() for task in self._tasks) else CheckStatus.OK
 
     async def _check_database(self) -> CheckStatus:
         try:

@@ -17,3 +17,4 @@ class HealthResponse(BaseModel):
     status: HealthStatus
     db: CheckStatus
     redis: CheckStatus
+    tasks: CheckStatus

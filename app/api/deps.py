@@ -35,8 +35,8 @@ def get_redis(conn: HTTPConnection) -> Redis:
 RedisDep = Annotated[Redis, Depends(get_redis)]
 
 
-def get_health_service(session: SessionDep, redis: RedisDep) -> HealthService:
-    return HealthService(session, redis)
+def get_health_service(conn: HTTPConnection, session: SessionDep, redis: RedisDep) -> HealthService:
+    return HealthService(session, redis, conn.app.state.background_tasks)
 
 
 def get_core_client(conn: HTTPConnection, redis: RedisDep) -> CoreClient:
