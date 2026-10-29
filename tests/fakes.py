@@ -15,6 +15,7 @@ from app.repositories import (
     ReadStateRepository,
 )
 from app.schemas.core import CoreChannel, Memberships, TeamMembership
+from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
@@ -306,9 +307,9 @@ class FakeBus:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
 
-    async def publish(self, channel_id: uuid.UUID, event: dict[str, Any]) -> None:
+    async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
-        self.published.append((channel_id, event))
+        self.published.append((event.channel_id, event.model_dump(mode="json")))
 
 
 class MessageFakes:

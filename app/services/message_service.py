@@ -1,7 +1,5 @@
 import re
 import uuid
-from datetime import datetime
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -118,20 +116,6 @@ class MessageService:
         self._access = access
         self._bus = bus
 
-    async def _publish(
-        self,
-        event_type: EventType,
-        channel_id: uuid.UUID,
-        seq: int,
-        created_at: datetime,
-        payload: dict[str, Any],
-    ) -> None:
-        """Only after the commit, so nobody gets an event for a change that isn't saved."""
-        event = ChannelEvent(
-            type=event_type, channel_id=channel_id, seq=seq, created_at=created_at, payload=payload
-        )
-        await self._bus.publish(channel_id, event.model_dump(mode="json"))
-
     async def send(
         self, user: Memberships, channel_id: uuid.UUID, data: SendMessageRequest
     ) -> tuple[MessageResponse, bool]:
@@ -181,7 +165,15 @@ class MessageService:
                 raise  # another constraint failed, not a retry
             return self._retry(original, channel_id), False
 
-        await self._publish(EventType.MESSAGE_CREATED, channel_id, seq, message.created_at, payload)
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_CREATED,
+                channel_id=channel_id,
+                seq=seq,
+                created_at=message.created_at,
+                payload=payload,
+            )
+        )
         return response, True
 
     async def list_history(
@@ -247,8 +239,14 @@ class MessageService:
             )
 
         assert updated.edited_at is not None  # set by update_message_body
-        await self._publish(
-            EventType.MESSAGE_EDITED, updated.channel_id, seq, updated.edited_at, payload
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_EDITED,
+                channel_id=updated.channel_id,
+                seq=seq,
+                created_at=updated.edited_at,
+                payload=payload,
+            )
         )
         return response
 
@@ -287,7 +285,13 @@ class MessageService:
             return
 
         assert deleted.deleted_at is not None  # set by soft_delete_message
-        await self._publish(
-            EventType.MESSAGE_DELETED, deleted.channel_id, seq, deleted.deleted_at, payload
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_DELETED,
+                channel_id=deleted.channel_id,
+                seq=seq,
+                created_at=deleted.deleted_at,
+                payload=payload,
+            )
         )
         # TODO(CHAT-212): detach the message's files through chatty-core (D-03)

@@ -73,14 +73,15 @@ class ReactionService:
             pass  # nothing changed: 200 without an event
 
         else:
-            event = ChannelEvent(
-                type=EventType.REACTION_ADDED,
-                channel_id=message.channel_id,
-                seq=seq,
-                created_at=created_at,
-                payload=payload,
+            await self._bus.publish(
+                ChannelEvent(
+                    type=EventType.REACTION_ADDED,
+                    channel_id=message.channel_id,
+                    seq=seq,
+                    created_at=created_at,
+                    payload=payload,
+                )
             )
-            await self._bus.publish(message.channel_id, event.model_dump(mode="json"))
 
         return await self._list_reactions(message_id, user.user_id)
 
