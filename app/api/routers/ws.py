@@ -71,6 +71,8 @@ async def websocket_endpoint(
     token_deadline = loop.time() + (claims.expires_at - time.time())
     heartbeat_deadline = loop.time() + HEARTBEAT_TIMEOUT_SECONDS
 
+    # shortcut: a channel removal that arrives while get_user() runs is missed, so this socket
+    # can still get that channel's new messages until it reconnects (at most 15 min); CHAT-271.
     await gateway.connect(user.user_id, websocket, [c.channel_id for c in user.channels])
     try:
         async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
