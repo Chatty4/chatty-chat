@@ -5,13 +5,14 @@ import pytest
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, ServiceUnavailable
-from app.schemas.core import CoreChannel, TeamMembership
+from app.schemas.core import CoreChannel, TeamMembership, TeamRole
 from app.schemas.sync import ChannelSyncError, ChannelSyncResult
+from app.services.sync_service import MAX_PARALLEL_CHECKS
 from tests.fakes import FakeCore, SyncFakes, channel, memberships, saved_event
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 A, B = uuid.uuid4(), uuid.uuid4()  # public channels of the user's team
-TEAM = TeamMembership(team_id=uuid.uuid4(), role="member", public_channel_ids=[A, B])
+TEAM = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[A, B])
 USER = memberships(USER_ID, teams=[TEAM])
 
 
@@ -102,6 +103,36 @@ async def test_unknown_channels_are_checked_at_the_same_time():
     for channel_id in unknown:
         assert response.channels[channel_id] == ChannelSyncError(error=ErrorCode.CHANNEL_NOT_FOUND)
     assert [event.seq for event in result(response, A).events] == [1]
+
+
+class _CountingCore(FakeCore):
+    """get_channel takes a moment, so overlapping calls really overlap; `most` is the peak."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.running = 0
+        self.most = 0
+
+    async def get_channel(self, channel_id: uuid.UUID) -> CoreChannel | None:
+        self.running += 1
+        self.most = max(self.most, self.running)
+        await asyncio.sleep(0.01)
+        self.running -= 1
+        return None
+
+
+async def test_at_most_20_channels_are_checked_at_once():
+    core = _CountingCore()
+    unknown = [uuid.uuid4() for _ in range(100)]
+    fakes = SyncFakes(core, [], {})
+
+    response = await fakes.service.sync(USER, dict.fromkeys(unknown, 0))
+
+    assert core.most == MAX_PARALLEL_CHECKS == 20
+    assert all(
+        response.channels[channel_id] == ChannelSyncError(error=ErrorCode.CHANNEL_NOT_FOUND)
+        for channel_id in unknown
+    )
 
 
 async def test_core_unavailable_fails_the_whole_sync():

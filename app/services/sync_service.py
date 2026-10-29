@@ -18,6 +18,7 @@ from app.schemas.sync import (
 from app.services.access_service import AccessService
 
 MAX_SYNC_EVENTS = 500  # per channel (api-chat.md, POST /sync)
+MAX_PARALLEL_CHECKS = 20  # chatty-core calls at once per /sync; httpx's pool has 100
 
 
 def _cleaned_up(rows: list[ChannelEventRow], after_seq: int, last_seq: int) -> bool:
@@ -47,10 +48,16 @@ class SyncService:
         channels: dict[uuid.UUID, ChannelSyncResult | ChannelSyncError] = {}
         readable: dict[uuid.UUID, int] = {}
         # At the same time: each unknown channel is a chatty-core call, and 404s aren't cached.
-        # They use only the core client, never the session.
+        # They use only the core client, never the session. The semaphore keeps one request
+        # with 500 unknown channels from sending 500 calls at once.
+        limit = asyncio.Semaphore(MAX_PARALLEL_CHECKS)
+
+        async def check_can_read(channel_id: uuid.UUID) -> None:
+            async with limit:
+                await self._access.check_can_read(user, channel_id)
+
         checks = await asyncio.gather(
-            *(self._access.check_can_read(user, channel_id) for channel_id in cursors),
-            return_exceptions=True,
+            *(check_can_read(channel_id) for channel_id in cursors), return_exceptions=True
         )
         for (channel_id, after_seq), check in zip(cursors.items(), checks, strict=True):
             if isinstance(check, NotFound | PermissionDenied):
