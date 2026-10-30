@@ -44,6 +44,10 @@ class ReactionRepository:
         )
         return await self._session.scalar(stmt)
 
+    async def delete_message_reactions(self, message_id: uuid.UUID) -> None:
+        """Remove every reaction of a deleted message. message.deleted covers them: no events."""
+        await self._session.execute(delete(Reaction).where(Reaction.message_id == message_id))
+
     async def list_reactions(
         self, message_ids: list[uuid.UUID], user_id: uuid.UUID
     ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:

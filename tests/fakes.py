@@ -302,6 +302,9 @@ class FakeReactions:
         self.rows.remove((message_id, user_id, emoji))
         return datetime.now(UTC)
 
+    async def delete_message_reactions(self, message_id: uuid.UUID) -> None:
+        self.rows = [row for row in self.rows if row[0] != message_id]
+
     async def list_reactions(
         self, message_ids: list[uuid.UUID], user_id: uuid.UUID
     ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:

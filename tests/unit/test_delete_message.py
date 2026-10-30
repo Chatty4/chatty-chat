@@ -66,12 +66,20 @@ async def test_author_deletes_their_message():
     message = message_in(room)
     fakes = fakes_for(room, message)
     fakes.counters.last_seq = 7
+    other_message_id = uuid.uuid4()
+    fakes.reactions.rows = [
+        (message.id, USER_ID, "👍"),
+        (message.id, OTHER_ID, "🎉"),
+        (other_message_id, USER_ID, "👍"),
+    ]
 
     await fakes.service.delete(USER, message.id)
 
     assert fakes.counters.last_seq == 8
     assert_deleted(fakes, message, USER)
     assert fakes.events.cleared == [(message.channel_id, 3, message.id)]  # its own seq, not 8
+    # its reactions go too, without reaction.removed events; other messages keep theirs
+    assert fakes.reactions.rows == [(other_message_id, USER_ID, "👍")]
 
 
 async def test_channel_owner_deletes_someone_elses_message():
@@ -176,12 +184,14 @@ async def test_already_deleted_message_is_204_without_an_event():
     message = message_in(room)
     message.deleted_at = datetime.now(UTC)
     fakes = fakes_for(room, message)
+    fakes.reactions.rows = [(message.id, USER_ID, "👍")]  # from before reactions were deleted
 
     await fakes.service.delete(USER, message.id)
 
     assert fakes.counters.last_seq == 0
     assert fakes.events.rows == []
     assert fakes.events.cleared == []  # cleared by the first delete
+    assert fakes.reactions.rows == [(message.id, USER_ID, "👍")]  # this request deleted nothing
     assert fakes.log == ["commit"]  # only the read
     assert fakes.bus.published == []
 
@@ -190,9 +200,11 @@ async def test_message_deleted_during_the_delete_rolls_back_without_an_event():
     room = channel(USER_ID)
     message = message_in(room)
     fakes = fakes_for(room, message, deleted_meanwhile=True)
+    fakes.reactions.rows = [(message.id, USER_ID, "👍")]
 
     await fakes.service.delete(USER, message.id)  # no error: it is deleted either way
 
     assert fakes.log == ["commit", "rollback"]  # the seq taken in the write is given back
+    assert fakes.reactions.rows == [(message.id, USER_ID, "👍")]  # left to the other delete
     assert fakes.events.rows == []
     assert fakes.bus.published == []

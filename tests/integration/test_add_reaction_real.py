@@ -307,3 +307,27 @@ async def test_history_drops_a_removed_reaction(sessions, room):
     await unreact(sessions, room, bus, USER, sent.id)
 
     assert (await history(sessions, room, USER))[sent.id] == []
+
+
+async def test_deleting_a_message_deletes_its_reactions_without_events(sessions, room):
+    sent = await send(sessions, room)
+    kept = await send(sessions, room)
+    bus = FakeBus()
+    await react(sessions, room, bus, USER, sent.id)
+    await react(sessions, room, bus, OTHER, sent.id, "🎉")
+    await react(sessions, room, bus, USER, kept.id)
+
+    await delete_message(sessions, room, sent.id)
+
+    assert await reaction_rows(sessions, sent.id) == []
+    assert await reaction_rows(sessions, kept.id) == [(USER_ID, "👍")]  # other messages keep theirs
+    assert await event_kinds(sessions, room.channel_id) == [
+        "message.created",
+        "message.created",
+        "reaction.added",
+        "reaction.added",
+        "reaction.added",
+        "message.deleted",  # no reaction.removed: message.deleted covers them
+    ]
+    seen = await history(sessions, room, USER)
+    assert (seen[sent.id], seen[kept.id]) == ([], [("👍", 1, True)])
