@@ -80,3 +80,19 @@ async def test_no_token_is_401(app, client):
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+
+
+async def test_history_items_have_reactions_with_count_and_me(app, client, auth):
+    room = channel(USER_ID, OTHER_ID)
+    message = saved_message(room.channel_id, USER_ID, uuid.uuid4())
+    core = FakeCore(memberships=memberships(USER_ID), channel=room)
+    fakes = MessageFakes(core, FakeMessages(stored=[message]))
+    fakes.reactions.rows = [(message.id, OTHER_ID, "👍"), (message.id, USER_ID, "👍")]
+    app.dependency_overrides[get_core_client] = lambda: core
+    app.dependency_overrides[get_message_service] = lambda: fakes.service
+
+    response = await client.get(url(room.channel_id), headers=auth)
+
+    assert response.status_code == 200
+    [item] = response.json()["messages"]
+    assert item["reactions"] == [{"emoji": "👍", "count": 2, "me": True}]

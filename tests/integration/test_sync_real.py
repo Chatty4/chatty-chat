@@ -14,6 +14,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    ReactionRepository,
     ReadStateRepository,
 )
 from app.schemas.core import CoreChannel
@@ -59,6 +60,7 @@ def messages(session: AsyncSession, room: CoreChannel) -> MessageService:
         ChannelCounterRepository(session),
         ChannelEventRepository(session),
         ReadStateRepository(session),
+        ReactionRepository(session),
         access(room),
         cast(EventBus, FakeBus()),
     )

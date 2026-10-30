@@ -11,12 +11,15 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    ReactionRepository,
     ReadStateRepository,
 )
 from app.schemas.core import CoreChannel, Memberships, TeamMembership
+from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
+from app.services.reaction_service import ReactionService
 from app.services.sync_service import SyncService
 
 
@@ -141,9 +144,9 @@ class FakeMessages:
     """
     `existing` is what the retry lookup finds. With `insert_error`, insert_message raises it, as if
     another request had saved `saved_meanwhile` between the lookup and the insert.
-    `stored` are the messages get_message finds. With `deleted_meanwhile`, update_message_body and
-    soft_delete_message find nothing to change, as if the message was deleted after the service
-    checked it.
+    `stored` are the messages get_message finds. With `deleted_meanwhile`, update_message_body,
+    soft_delete_message and lock_undeleted_message find nothing, as if the message was deleted
+    after the service checked it.
     """
 
     def __init__(
@@ -184,6 +187,10 @@ class FakeMessages:
         message.mentions = []
         message.deleted_at = datetime.now(UTC)
         return message
+
+    async def lock_undeleted_message(self, message_id: uuid.UUID) -> bool:
+        message = self._stored.get(message_id)
+        return message is not None and message.deleted_at is None and not self._deleted_meanwhile
 
     async def get_by_client_msg_id(
         self, author_id: uuid.UUID, client_msg_id: uuid.UUID
@@ -269,6 +276,49 @@ class FakeReadState:
         self.positions[key] = max(self.positions.get(key, 0), seq)
 
 
+class FakeReactions:
+    """
+    `rows` are the stored reactions as (message_id, user_id, emoji), oldest first.
+    `asked` records the message ids of each list_reactions call.
+    """
+
+    def __init__(self, rows: list[tuple[uuid.UUID, uuid.UUID, str]] | None = None) -> None:
+        self.rows = list(rows or [])
+        self.asked: list[list[uuid.UUID]] = []
+
+    async def add_reaction(
+        self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
+    ) -> datetime | None:
+        if (message_id, user_id, emoji) in self.rows:
+            return None
+        self.rows.append((message_id, user_id, emoji))
+        return datetime.now(UTC)
+
+    async def remove_reaction(
+        self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
+    ) -> datetime | None:
+        if (message_id, user_id, emoji) not in self.rows:
+            return None
+        self.rows.remove((message_id, user_id, emoji))
+        return datetime.now(UTC)
+
+    async def delete_message_reactions(self, message_id: uuid.UUID) -> None:
+        self.rows = [row for row in self.rows if row[0] != message_id]
+
+    async def list_reactions(
+        self, message_ids: list[uuid.UUID], user_id: uuid.UUID
+    ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:
+        self.asked.append(list(message_ids))
+        users: dict[uuid.UUID, dict[str, list[uuid.UUID]]] = {}
+        for message_id, row_user_id, emoji in self.rows:
+            if message_id in message_ids:
+                users.setdefault(message_id, {}).setdefault(emoji, []).append(row_user_id)
+        return {
+            message_id: [(emoji, len(ids), user_id in ids) for emoji, ids in per_emoji.items()]
+            for message_id, per_emoji in users.items()
+        }
+
+
 class FakeBus:
     """Records what was published, and writes "publish" to `log` to show when."""
 
@@ -276,9 +326,9 @@ class FakeBus:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
 
-    async def publish(self, channel_id: uuid.UUID, event: dict[str, Any]) -> None:
+    async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
-        self.published.append((channel_id, event))
+        self.published.append((event.channel_id, event.model_dump(mode="json")))
 
 
 class MessageFakes:
@@ -290,6 +340,7 @@ class MessageFakes:
         self.counters = FakeCounters()
         self.events = FakeChannelEvents()
         self.read_state = FakeReadState()
+        self.reactions = FakeReactions()
         self.bus = FakeBus(self.log)
         # The fakes only duck-type the real classes, so cast them for the type checker.
         self.service = MessageService(
@@ -298,6 +349,30 @@ class MessageFakes:
             cast(ChannelCounterRepository, self.counters),
             cast(ChannelEventRepository, self.events),
             cast(ReadStateRepository, self.read_state),
+            cast(ReactionRepository, self.reactions),
+            AccessService(cast(CoreClient, core)),
+            cast(EventBus, self.bus),
+        )
+
+
+class ReactionFakes:
+    """A ReactionService on fakes. `log` shows the order of commit, rollback and publish."""
+
+    def __init__(
+        self, core: FakeCore, messages: FakeMessages, reactions: FakeReactions | None = None
+    ) -> None:
+        self.log: list[str] = []
+        self.messages = messages
+        self.reactions = reactions or FakeReactions()
+        self.counters = FakeCounters()
+        self.events = FakeChannelEvents()
+        self.bus = FakeBus(self.log)
+        self.service = ReactionService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(MessageRepository, self.messages),
+            cast(ReactionRepository, self.reactions),
+            cast(ChannelCounterRepository, self.counters),
+            cast(ChannelEventRepository, self.events),
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
         )

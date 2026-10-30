@@ -81,6 +81,18 @@ class MessageRepository:
         )
         return (await self._session.scalars(stmt)).one_or_none()
 
+    async def lock_undeleted_message(self, message_id: uuid.UUID) -> bool:
+        """
+        Lock the message row until the transaction ends, so it can't be deleted
+        meanwhile. False if it is already deleted.
+        """
+        stmt = (
+            select(Message.id)
+            .where(Message.id == message_id, Message.deleted_at.is_(None))
+            .with_for_update(read=True)
+        )
+        return await self._session.scalar(stmt) is not None
+
     async def list_messages_before(
         self, channel_id: uuid.UUID, before_seq: int | None, limit: int
     ) -> list[Message]:

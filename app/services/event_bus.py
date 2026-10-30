@@ -1,10 +1,10 @@
-import json
 import logging
 import uuid
-from typing import Any
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+
+from app.schemas.events import ChannelEvent
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,12 @@ class EventBus:
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
-    async def publish(self, channel_id: uuid.UUID, event: dict[str, Any]) -> None:
+    async def publish(self, event: ChannelEvent) -> None:
         """
-        Push an event to everyone subscribed to this channel.
-        If Redis is down, log and move on.
+        Push an event to everyone subscribed to its channel. Call it only after the commit,
+        so nobody gets an event for a change that isn't saved. If Redis is down, log and move on.
         """
         try:
-            await self._redis.publish(channel_name(channel_id), json.dumps(event))
+            await self._redis.publish(channel_name(event.channel_id), event.model_dump_json())
         except RedisError:
-            logger.exception("Failed to publish event for channel %s", channel_id)
+            logger.exception("Failed to publish event for channel %s", event.channel_id)

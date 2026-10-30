@@ -1,7 +1,5 @@
 import re
 import uuid
-from datetime import datetime
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +17,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    ReactionRepository,
     ReadStateRepository,
 )
 from app.schemas.core import Memberships
@@ -27,6 +26,7 @@ from app.schemas.messages import (
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
+    ReactionResponse,
     SendMessageRequest,
 )
 from app.services.access_service import AccessService
@@ -57,8 +57,40 @@ def extract_mentions(body: str, member_ids: set[uuid.UUID]) -> list[uuid.UUID]:
     return mentions
 
 
-def to_message_response(message: Message) -> MessageResponse:
-    """The message object. Files come with CHAT-212, reactions and pins with CHAT-127."""
+async def get_readable_message(
+    session: AsyncSession,
+    messages: MessageRepository,
+    access: AccessService,
+    user: Memberships,
+    message_id: uuid.UUID,
+) -> Message:
+    """
+    The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
+    """
+    async with session.begin():
+        message = await messages.get_message(message_id)
+
+    if message is None:
+        raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
+
+    try:
+        await access.check_can_read(user, message.channel_id)
+    except (NotFound, PermissionDenied) as exc:
+        raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
+    return message
+
+
+def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionResponse]:
+    return [ReactionResponse(emoji=emoji, count=count, me=me) for emoji, count, me in rows]
+
+
+def to_message_response(
+    message: Message, reactions: list[tuple[str, int, bool]] | None = None
+) -> MessageResponse:
+    """
+    The message object. Files come with CHAT-212, pins with CHAT-204. A deleted message has no
+    reactions (api-chat.md), even if rows from before the delete are still there.
+    """
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -68,7 +100,7 @@ def to_message_response(message: Message) -> MessageResponse:
         file_ids=[],
         attachments=[],
         mentions=list(message.mentions),
-        reactions=[],
+        reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=False,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
@@ -84,6 +116,7 @@ class MessageService:
         counters: ChannelCounterRepository,
         events: ChannelEventRepository,
         read_state: ReadStateRepository,
+        reactions: ReactionRepository,
         access: AccessService,
         bus: EventBus,
     ) -> None:
@@ -92,22 +125,9 @@ class MessageService:
         self._counters = counters
         self._events = events
         self._read_state = read_state
+        self._reactions = reactions
         self._access = access
         self._bus = bus
-
-    async def _publish(
-        self,
-        event_type: EventType,
-        channel_id: uuid.UUID,
-        seq: int,
-        created_at: datetime,
-        payload: dict[str, Any],
-    ) -> None:
-        """Only after the commit, so nobody gets an event for a change that isn't saved."""
-        event = ChannelEvent(
-            type=event_type, channel_id=channel_id, seq=seq, created_at=created_at, payload=payload
-        )
-        await self._bus.publish(channel_id, event.model_dump(mode="json"))
 
     async def send(
         self, user: Memberships, channel_id: uuid.UUID, data: SendMessageRequest
@@ -158,7 +178,15 @@ class MessageService:
                 raise  # another constraint failed, not a retry
             return self._retry(original, channel_id), False
 
-        await self._publish(EventType.MESSAGE_CREATED, channel_id, seq, message.created_at, payload)
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_CREATED,
+                channel_id=channel_id,
+                seq=seq,
+                created_at=message.created_at,
+                payload=payload,
+            )
+        )
         return response, True
 
     async def list_history(
@@ -175,9 +203,15 @@ class MessageService:
 
             # one extra row tells whether an older page exists.
             rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
+            page = rows[:limit]
+
+            # in the same transaction, so the page and its counts are from the same moment
+            reactions = await self._reactions.list_reactions(
+                [message.id for message in page], user.user_id
+            )
 
         return MessageHistoryResponse(
-            messages=[to_message_response(message) for message in rows[:limit]],
+            messages=[to_message_response(message, reactions.get(message.id)) for message in page],
             has_more=len(rows) > limit,
             last_seq=last_seq,
         )
@@ -224,26 +258,21 @@ class MessageService:
             )
 
         assert updated.edited_at is not None  # set by update_message_body
-        await self._publish(
-            EventType.MESSAGE_EDITED, updated.channel_id, seq, updated.edited_at, payload
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_EDITED,
+                channel_id=updated.channel_id,
+                seq=seq,
+                created_at=updated.edited_at,
+                payload=payload,
+            )
         )
         return response
 
     async def _get_readable_message(self, user: Memberships, message_id: uuid.UUID) -> Message:
-        """
-        The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
-        """
-        async with self._session.begin():
-            message = await self._messages.get_message(message_id)
-
-        if message is None:
-            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
-
-        try:
-            await self._access.check_can_read(user, message.channel_id)
-        except (NotFound, PermissionDenied) as exc:
-            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
-        return message
+        return await get_readable_message(
+            self._session, self._messages, self._access, user, message_id
+        )
 
     async def delete(self, user: Memberships, message_id: uuid.UUID) -> None:
         """Soft-delete a message (D-05). Takes the next seq and sends message.deleted."""
@@ -260,7 +289,8 @@ class MessageService:
                 if deleted is None:  # deleted by another request after the check above
                     raise _DeletedMeanwhile
                 await self._events.clear_message_text(deleted.channel_id, deleted.seq, deleted.id)
-                # TODO(CHAT-127): remove the message's pins
+                await self._reactions.delete_message_reactions(deleted.id)
+                # TODO(CHAT-204): remove the message's pins
 
                 payload = {
                     "message_id": str(deleted.id),
@@ -275,7 +305,13 @@ class MessageService:
             return
 
         assert deleted.deleted_at is not None  # set by soft_delete_message
-        await self._publish(
-            EventType.MESSAGE_DELETED, deleted.channel_id, seq, deleted.deleted_at, payload
+        await self._bus.publish(
+            ChannelEvent(
+                type=EventType.MESSAGE_DELETED,
+                channel_id=deleted.channel_id,
+                seq=seq,
+                created_at=deleted.deleted_at,
+                payload=payload,
+            )
         )
         # TODO(CHAT-212): detach the message's files through chatty-core (D-03)
