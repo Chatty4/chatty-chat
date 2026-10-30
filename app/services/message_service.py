@@ -17,6 +17,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    ReactionRepository,
     ReadStateRepository,
 )
 from app.schemas.core import Memberships
@@ -115,6 +116,7 @@ class MessageService:
         counters: ChannelCounterRepository,
         events: ChannelEventRepository,
         read_state: ReadStateRepository,
+        reactions: ReactionRepository,
         access: AccessService,
         bus: EventBus,
     ) -> None:
@@ -123,6 +125,7 @@ class MessageService:
         self._counters = counters
         self._events = events
         self._read_state = read_state
+        self._reactions = reactions
         self._access = access
         self._bus = bus
 
@@ -200,9 +203,15 @@ class MessageService:
 
             # one extra row tells whether an older page exists.
             rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
+            page = rows[:limit]
+
+            # in the same transaction, so the page and its counts are from the same moment
+            reactions = await self._reactions.list_reactions(
+                [message.id for message in page], user.user_id
+            )
 
         return MessageHistoryResponse(
-            messages=[to_message_response(message) for message in rows[:limit]],
+            messages=[to_message_response(message, reactions.get(message.id)) for message in page],
             has_more=len(rows) > limit,
             last_seq=last_seq,
         )

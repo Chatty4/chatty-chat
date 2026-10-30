@@ -6,7 +6,7 @@ import pytest
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, ValidationFailed
 from app.models import Message
-from app.schemas.core import CoreChannel, TeamMembership
+from app.schemas.core import CoreChannel, TeamMembership, TeamRole
 from app.schemas.messages import EditMessageRequest
 from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
 
@@ -124,7 +124,9 @@ async def test_archived_channel_is_409(flags):
 async def test_author_who_left_a_public_channel_is_403_not_a_member():
     room = channel(OTHER_ID)  # the author is no longer a member
     message = message_in(room)
-    team = TeamMembership(team_id=room.team_id, role="member", public_channel_ids=[room.channel_id])
+    team = TeamMembership(
+        team_id=room.team_id, role=TeamRole.MEMBER, public_channel_ids=[room.channel_id]
+    )
     user = memberships(USER_ID, teams=[team])  # can still read the public channel
     fakes = fakes_for(room, message)
 

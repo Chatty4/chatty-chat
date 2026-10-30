@@ -60,6 +60,7 @@ def message_service(session: AsyncSession, room: CoreChannel) -> MessageService:
         ChannelCounterRepository(session),
         ChannelEventRepository(session),
         ReadStateRepository(session),
+        ReactionRepository(session),
         core(room),
         cast(EventBus, FakeBus()),
     )
@@ -111,6 +112,15 @@ async def unreact(
 ) -> ReactionsResponse:
     async with sessions() as session:
         return await reaction_service(session, room, bus).remove(user, message_id, emoji)
+
+
+async def history(
+    sessions, room: CoreChannel, user: Memberships
+) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:
+    """(emoji, count, me) per message of the newest page, as `user` sees it."""
+    async with sessions() as session:
+        page = await message_service(session, room).list_history(user, room.channel_id, None, 50)
+    return {m.id: [(r.emoji, r.count, r.me) for r in m.reactions] for m in page.messages}
 
 
 async def event_kinds(sessions, channel_id: uuid.UUID) -> list[str]:
@@ -272,3 +282,28 @@ async def test_concurrent_removes_write_one_event(sessions, room):
     assert await reaction_rows(sessions, sent.id) == []
     assert await last_seq(sessions, room.channel_id) == 3  # created, added, removed
     assert len(bus.published) == 1
+
+
+async def test_history_shows_the_reactions_of_each_message(sessions, room):
+    first = await send(sessions, room)
+    second = await send(sessions, room)
+    bus = FakeBus()
+    await react(sessions, room, bus, USER, first.id)
+    await react(sessions, room, bus, OTHER, first.id)
+    await react(sessions, room, bus, OTHER, first.id, "🎉")
+
+    mine = await history(sessions, room, USER)
+    theirs = await history(sessions, room, OTHER)
+
+    assert mine[first.id] == [("👍", 2, True), ("🎉", 1, False)]
+    assert theirs[first.id] == [("👍", 2, True), ("🎉", 1, True)]
+    assert mine[second.id] == theirs[second.id] == []
+
+
+async def test_history_drops_a_removed_reaction(sessions, room):
+    sent = await send(sessions, room)
+    bus = FakeBus()
+    await react(sessions, room, bus, USER, sent.id)
+    await unreact(sessions, room, bus, USER, sent.id)
+
+    assert (await history(sessions, room, USER))[sent.id] == []

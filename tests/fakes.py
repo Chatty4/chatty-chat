@@ -277,10 +277,14 @@ class FakeReadState:
 
 
 class FakeReactions:
-    """`rows` are the stored reactions as (message_id, user_id, emoji), oldest first."""
+    """
+    `rows` are the stored reactions as (message_id, user_id, emoji), oldest first.
+    `asked` records the message ids of each list_reactions call.
+    """
 
     def __init__(self, rows: list[tuple[uuid.UUID, uuid.UUID, str]] | None = None) -> None:
         self.rows = list(rows or [])
+        self.asked: list[list[uuid.UUID]] = []
 
     async def add_reaction(
         self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
@@ -301,6 +305,7 @@ class FakeReactions:
     async def list_reactions(
         self, message_ids: list[uuid.UUID], user_id: uuid.UUID
     ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:
+        self.asked.append(list(message_ids))
         users: dict[uuid.UUID, dict[str, list[uuid.UUID]]] = {}
         for message_id, row_user_id, emoji in self.rows:
             if message_id in message_ids:
@@ -332,6 +337,7 @@ class MessageFakes:
         self.counters = FakeCounters()
         self.events = FakeChannelEvents()
         self.read_state = FakeReadState()
+        self.reactions = FakeReactions()
         self.bus = FakeBus(self.log)
         # The fakes only duck-type the real classes, so cast them for the type checker.
         self.service = MessageService(
@@ -340,6 +346,7 @@ class MessageFakes:
             cast(ChannelCounterRepository, self.counters),
             cast(ChannelEventRepository, self.events),
             cast(ReadStateRepository, self.read_state),
+            cast(ReactionRepository, self.reactions),
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
         )

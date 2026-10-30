@@ -91,6 +91,7 @@ def get_message_service(
         ChannelCounterRepository(session),
         ChannelEventRepository(session),
         ReadStateRepository(session),
+        ReactionRepository(session),
         access,
         bus,
     )
