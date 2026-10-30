@@ -12,10 +12,10 @@ from app.repositories import (
 )
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent, EventType
-from app.schemas.messages import ReactionResponse, ReactionsResponse
+from app.schemas.messages import ReactionsResponse
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
-from app.services.message_service import get_readable_message
+from app.services.message_service import get_readable_message, to_reaction_responses
 
 
 class _AlreadyReacted(Exception):
@@ -132,9 +132,8 @@ class ReactionService:
 
     async def _list_reactions(self, message_id: uuid.UUID, user_id: uuid.UUID) -> ReactionsResponse:
         async with self._session.begin():
-            rows = await self._reactions.list_reactions(message_id, user_id)
+            reactions = await self._reactions.list_reactions([message_id], user_id)
 
         return ReactionsResponse(
-            message_id=message_id,
-            reactions=[ReactionResponse(emoji=e, count=c, me=me) for e, c, me in rows],
+            message_id=message_id, reactions=to_reaction_responses(reactions.get(message_id, []))
         )

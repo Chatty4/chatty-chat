@@ -25,6 +25,7 @@ from app.schemas.messages import (
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
+    ReactionResponse,
     SendMessageRequest,
 )
 from app.services.access_service import AccessService
@@ -78,8 +79,17 @@ async def get_readable_message(
     return message
 
 
-def to_message_response(message: Message) -> MessageResponse:
-    """The message object. Files come with CHAT-212, reactions and pins with CHAT-127."""
+def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionResponse]:
+    return [ReactionResponse(emoji=emoji, count=count, me=me) for emoji, count, me in rows]
+
+
+def to_message_response(
+    message: Message, reactions: list[tuple[str, int, bool]] | None = None
+) -> MessageResponse:
+    """
+    The message object. Files come with CHAT-212, pins with CHAT-204. A deleted message has no
+    reactions (api-chat.md), even if rows from before the delete are still there.
+    """
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -89,7 +99,7 @@ def to_message_response(message: Message) -> MessageResponse:
         file_ids=[],
         attachments=[],
         mentions=list(message.mentions),
-        reactions=[],
+        reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=False,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,

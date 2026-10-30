@@ -299,13 +299,16 @@ class FakeReactions:
         return datetime.now(UTC)
 
     async def list_reactions(
-        self, message_id: uuid.UUID, user_id: uuid.UUID
-    ) -> list[tuple[str, int, bool]]:
-        users: dict[str, list[uuid.UUID]] = {}
-        for row_message_id, row_user_id, emoji in self.rows:
-            if row_message_id == message_id:
-                users.setdefault(emoji, []).append(row_user_id)
-        return [(emoji, len(ids), user_id in ids) for emoji, ids in users.items()]
+        self, message_ids: list[uuid.UUID], user_id: uuid.UUID
+    ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:
+        users: dict[uuid.UUID, dict[str, list[uuid.UUID]]] = {}
+        for message_id, row_user_id, emoji in self.rows:
+            if message_id in message_ids:
+                users.setdefault(message_id, {}).setdefault(emoji, []).append(row_user_id)
+        return {
+            message_id: [(emoji, len(ids), user_id in ids) for emoji, ids in per_emoji.items()]
+            for message_id, per_emoji in users.items()
+        }
 
 
 class FakeBus:

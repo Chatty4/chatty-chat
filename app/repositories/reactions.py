@@ -45,13 +45,28 @@ class ReactionRepository:
         return await self._session.scalar(stmt)
 
     async def list_reactions(
-        self, message_id: uuid.UUID, user_id: uuid.UUID
-    ) -> list[tuple[str, int, bool]]:
-        """(emoji, count, me) per emoji, in the order the emoji were first used."""
+        self, message_ids: list[uuid.UUID], user_id: uuid.UUID
+    ) -> dict[uuid.UUID, list[tuple[str, int, bool]]]:
+        """
+        (emoji, count, me) per emoji of each message, in the order the emoji were first used.
+        One query for all of them. Messages without reactions are not in the result.
+        """
+        if not message_ids:
+            return {}
+
         stmt = (
-            select(Reaction.emoji, func.count(), func.bool_or(Reaction.user_id == user_id))
-            .where(Reaction.message_id == message_id)
-            .group_by(Reaction.emoji)
+            select(
+                Reaction.message_id,
+                Reaction.emoji,
+                func.count(),
+                func.bool_or(Reaction.user_id == user_id),
+            )
+            .where(Reaction.message_id.in_(message_ids))
+            .group_by(Reaction.message_id, Reaction.emoji)
             .order_by(func.min(Reaction.created_at))
         )
-        return [(emoji, count, me) for emoji, count, me in await self._session.execute(stmt)]
+
+        reactions: dict[uuid.UUID, list[tuple[str, int, bool]]] = {}
+        for message_id, emoji, count, me in await self._session.execute(stmt):
+            reactions.setdefault(message_id, []).append((emoji, count, me))
+        return reactions
