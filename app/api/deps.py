@@ -14,6 +14,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    PinRepository,
     ReactionRepository,
     ReadStateRepository,
 )
@@ -92,6 +93,7 @@ def get_message_service(
         ChannelEventRepository(session),
         ReadStateRepository(session),
         ReactionRepository(session),
+        PinRepository(session),
         access,
         bus,
     )

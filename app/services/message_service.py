@@ -17,6 +17,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    PinRepository,
     ReactionRepository,
     ReadStateRepository,
 )
@@ -85,7 +86,7 @@ def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionRes
 
 
 def to_message_response(
-    message: Message, reactions: list[tuple[str, int, bool]] | None = None
+    message: Message, reactions: list[tuple[str, int, bool]] | None = None, pinned: bool = False
 ) -> MessageResponse:
     """
     The message object. Files come with CHAT-212, pins with CHAT-204. A deleted message has no
@@ -101,7 +102,7 @@ def to_message_response(
         attachments=[],
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
-        pinned=False,
+        pinned=pinned,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
         created_at=message.created_at,
@@ -117,6 +118,7 @@ class MessageService:
         events: ChannelEventRepository,
         read_state: ReadStateRepository,
         reactions: ReactionRepository,
+        pins: PinRepository,
         access: AccessService,
         bus: EventBus,
     ) -> None:
@@ -126,6 +128,7 @@ class MessageService:
         self._events = events
         self._read_state = read_state
         self._reactions = reactions
+        self._pins = pins
         self._access = access
         self._bus = bus
 
@@ -205,13 +208,15 @@ class MessageService:
             rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
             page = rows[:limit]
 
-            # in the same transaction, so the page and its counts are from the same moment
-            reactions = await self._reactions.list_reactions(
-                [message.id for message in page], user.user_id
-            )
+            message_ids = [message.id for message in page]
+            reactions = await self._reactions.list_reactions(message_ids, user.user_id)
+            pinned = await self._pins.pinned_message_ids(message_ids)
 
         return MessageHistoryResponse(
-            messages=[to_message_response(message, reactions.get(message.id)) for message in page],
+            messages=[
+                to_message_response(message, reactions.get(message.id), message.id in pinned)
+                for message in page
+            ],
             has_more=len(rows) > limit,
             last_seq=last_seq,
         )
@@ -290,7 +295,7 @@ class MessageService:
                     raise _DeletedMeanwhile
                 await self._events.clear_message_text(deleted.channel_id, deleted.seq, deleted.id)
                 await self._reactions.delete_message_reactions(deleted.id)
-                # TODO(CHAT-204): remove the message's pins
+                await self._pins.delete_message_pin(deleted.id)
 
                 payload = {
                     "message_id": str(deleted.id),

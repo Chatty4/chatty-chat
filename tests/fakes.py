@@ -11,6 +11,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    PinRepository,
     ReactionRepository,
     ReadStateRepository,
 )
@@ -319,6 +320,19 @@ class FakeReactions:
         }
 
 
+class FakePins:
+    """`pinned` are the message ids that have a pin."""
+
+    def __init__(self, pinned: set[uuid.UUID] | None = None) -> None:
+        self.pinned = set(pinned or [])
+
+    async def pinned_message_ids(self, message_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+        return self.pinned & set(message_ids)
+
+    async def delete_message_pin(self, message_id: uuid.UUID) -> None:
+        self.pinned.discard(message_id)
+
+
 class FakeBus:
     """Records what was published, and writes "publish" to `log` to show when."""
 
@@ -341,6 +355,7 @@ class MessageFakes:
         self.events = FakeChannelEvents()
         self.read_state = FakeReadState()
         self.reactions = FakeReactions()
+        self.pins = FakePins()
         self.bus = FakeBus(self.log)
         # The fakes only duck-type the real classes, so cast them for the type checker.
         self.service = MessageService(
@@ -350,6 +365,7 @@ class MessageFakes:
             cast(ChannelEventRepository, self.events),
             cast(ReadStateRepository, self.read_state),
             cast(ReactionRepository, self.reactions),
+            cast(PinRepository, self.pins),
             AccessService(cast(CoreClient, core)),
             cast(EventBus, self.bus),
         )
