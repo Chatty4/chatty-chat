@@ -14,7 +14,7 @@ class Pin(Base):
     __table_args__ = (Index("ix_pins_channel_id_pinned_at", "channel_id", "pinned_at"),)
 
     message_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("message.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
     )
     channel_id: Mapped[uuid.UUID]
     pinned_by: Mapped[uuid.UUID]
