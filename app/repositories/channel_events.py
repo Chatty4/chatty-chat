@@ -38,7 +38,7 @@ class ChannelEventRepository:
         return list(await self._session.scalars(stmt))
 
     async def clear_message_text(
-        self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID
+        self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID, was_edited: bool
     ) -> None:
         """A deleted message's text also leaves its earlier events. `seq` is the message's own."""
         created = (
@@ -74,4 +74,8 @@ class ChannelEventRepository:
             )
         )
         await self._session.execute(created)
-        await self._session.execute(edited)
+        # shortcut: for an edited message this scans every later event of the channel while
+        # the delete holds the channel's counter lock; index payload->>'message_id' if CHAT-224
+        # shows it.
+        if was_edited:
+            await self._session.execute(edited)

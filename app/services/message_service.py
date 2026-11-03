@@ -293,7 +293,12 @@ class MessageService:
 
                 if deleted is None:  # deleted by another request after the check above
                     raise _DeletedMeanwhile
-                await self._events.clear_message_text(deleted.channel_id, deleted.seq, deleted.id)
+                await self._events.clear_message_text(
+                    deleted.channel_id,
+                    deleted.seq,
+                    deleted.id,
+                    was_edited=deleted.edited_at is not None,
+                )
                 await self._reactions.delete_message_reactions(deleted.id)
                 await self._pins.delete_message_pin(deleted.id)
 
