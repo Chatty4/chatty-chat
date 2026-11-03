@@ -7,7 +7,15 @@ from app.core.codes import ErrorCode
 from app.core.exceptions import AppError
 from app.models import Message
 from app.schemas.core import CoreChannel, Memberships, TeamMembership, TeamRole
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    channel,
+    memberships,
+    saved_message,
+    saved_pin,
+)
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
@@ -208,3 +216,18 @@ async def test_message_deleted_during_the_delete_rolls_back_without_an_event():
     assert fakes.reactions.rows == [(message.id, USER_ID, "👍")]  # left to the other delete
     assert fakes.events.rows == []
     assert fakes.bus.published == []
+
+
+async def test_deleting_a_pinned_message_removes_its_pin_without_pin_removed():
+    room = channel(USER_ID)
+    message = message_in(room)
+    other = saved_message(room.channel_id, USER_ID, uuid.uuid4(), seq=4)
+    fakes = fakes_for(room, message)
+    fakes.pins.rows = {
+        pin.message_id: pin for pin in (saved_pin(message, USER_ID), saved_pin(other, USER_ID))
+    }
+
+    await fakes.service.delete(USER, message.id)
+
+    assert_deleted(fakes, message, USER)  # message.deleted is the only event
+    assert set(fakes.pins.rows) == {other.id}

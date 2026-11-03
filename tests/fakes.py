@@ -6,7 +6,7 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import ChannelEvent, Message
+from app.models import ChannelEvent, Message, Pin
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -20,6 +20,7 @@ from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelE
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
+from app.services.pin_service import PinService
 from app.services.reaction_service import ReactionService
 from app.services.sync_service import SyncService
 
@@ -320,17 +321,59 @@ class FakeReactions:
         }
 
 
+def saved_pin(message: Message, pinned_by: uuid.UUID, pinned_at: datetime | None = None) -> Pin:
+    """A pin as it comes back from the database."""
+    return Pin(
+        channel_id=message.channel_id,
+        message_id=message.id,
+        pinned_by=pinned_by,
+        pinned_at=pinned_at or datetime.now(UTC),
+    )
+
+
 class FakePins:
-    """`pinned` are the message ids that have a pin."""
+    """`rows` are the stored pins by message id. list_pins finds their messages in `messages`."""
 
-    def __init__(self, pinned: set[uuid.UUID] | None = None) -> None:
-        self.pinned = set(pinned or [])
+    def __init__(self, messages: FakeMessages | None = None, rows: list[Pin] | None = None) -> None:
+        self._messages = messages
+        self.rows = {pin.message_id: pin for pin in rows or []}
 
-    async def pinned_message_ids(self, message_ids: list[uuid.UUID]) -> set[uuid.UUID]:
-        return self.pinned & set(message_ids)
+    async def get_pin(self, message_id: uuid.UUID) -> Pin | None:
+        return self.rows.get(message_id)
+
+    async def count_pins(self, channel_id: uuid.UUID) -> int:
+        return sum(pin.channel_id == channel_id for pin in self.rows.values())
+
+    async def add_pin(
+        self, channel_id: uuid.UUID, message_id: uuid.UUID, user_id: uuid.UUID
+    ) -> datetime:
+        pin = Pin(channel_id=channel_id, message_id=message_id, pinned_by=user_id)
+        pin.pinned_at = datetime.now(UTC)
+        self.rows[message_id] = pin
+        return pin.pinned_at
+
+    async def remove_pin(self, message_id: uuid.UUID) -> datetime | None:
+        return None if self.rows.pop(message_id, None) is None else datetime.now(UTC)
 
     async def delete_message_pin(self, message_id: uuid.UUID) -> None:
-        self.pinned.discard(message_id)
+        self.rows.pop(message_id, None)
+
+    async def pinned_message_ids(self, message_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+        return set(message_ids) & self.rows.keys()
+
+    async def list_pins(self, channel_id: uuid.UUID) -> list[tuple[Pin, Message]]:
+        assert self._messages is not None
+        pins = sorted(
+            (pin for pin in self.rows.values() if pin.channel_id == channel_id),
+            key=lambda pin: pin.pinned_at,
+            reverse=True,
+        )
+        result = []
+        for pin in pins:
+            message = await self._messages.get_message(pin.message_id)
+            assert message is not None
+            result.append((pin, message))
+        return result
 
 
 class FakeBus:
@@ -386,6 +429,31 @@ class ReactionFakes:
         self.service = ReactionService(
             cast(AsyncSession, FakeSession(self.log)),
             cast(MessageRepository, self.messages),
+            cast(ReactionRepository, self.reactions),
+            cast(ChannelCounterRepository, self.counters),
+            cast(ChannelEventRepository, self.events),
+            AccessService(cast(CoreClient, core)),
+            cast(EventBus, self.bus),
+        )
+
+
+class PinFakes:
+    """A PinService on fakes. `log` shows the order of commit, rollback and publish."""
+
+    def __init__(
+        self, core: FakeCore, messages: FakeMessages, pins: list[Pin] | None = None
+    ) -> None:
+        self.log: list[str] = []
+        self.messages = messages
+        self.pins = FakePins(messages, pins)
+        self.reactions = FakeReactions()
+        self.counters = FakeCounters()
+        self.events = FakeChannelEvents()
+        self.bus = FakeBus(self.log)
+        self.service = PinService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(MessageRepository, self.messages),
+            cast(PinRepository, self.pins),
             cast(ReactionRepository, self.reactions),
             cast(ChannelCounterRepository, self.counters),
             cast(ChannelEventRepository, self.events),
