@@ -37,15 +37,16 @@ plus `uvicorn app.main:app --reload --port 8001` to run.
 
 ```
 app/
-  main.py             create_app(), lifespan (Redis client, engine.dispose()), routers, error handlers
+  main.py             create_app(), lifespan (engine and session factory, two Redis clients, the
+                      chatty-core httpx client, the gateway and core.events tasks), routers, error handlers
   core/               shared, no FastAPI or HTTP here
     config.py         Settings (pydantic-settings, fields in UPPERCASE), get_settings()
-    exceptions.py     app exceptions (NotFound, Forbidden, Conflict, ValidationFailed, ...)
+    exceptions.py     app exceptions (NotFound, PermissionDenied, Conflict, ValidationFailed, ...)
     logging.py
     security.py       JWT check with chatty-core's public key (RS256)
   db/
     base.py           DeclarativeBase with the naming convention
-    session.py        async engine, SessionLocal, get_session()
+    session.py        get_session(): one AsyncSession per request from app.state.session_factory
   models/             SQLAlchemy tables; __init__.py imports every model (Alembic needs it)
   schemas/            Pydantic request and response models (the contract shapes)
   repositories/       database queries only
