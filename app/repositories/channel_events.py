@@ -74,5 +74,8 @@ class ChannelEventRepository:
             )
         )
         await self._session.execute(created)
+        # shortcut: for an edited message this scans every later event of the channel while
+        # the delete holds the channel's counter lock; index payload->>'message_id' if CHAT-224
+        # shows it.
         if was_edited:
             await self._session.execute(edited)
