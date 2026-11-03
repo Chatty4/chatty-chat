@@ -8,7 +8,15 @@ from app.core.exceptions import AppError
 from app.models import Message
 from app.schemas.core import CoreChannel, TeamMembership, TeamRole
 from app.schemas.messages import ReactionResponse
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    channel,
+    memberships,
+    saved_message,
+    saved_pin,
+)
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
@@ -149,3 +157,14 @@ async def test_a_deleted_message_shows_no_reactions():
     page = await fakes.service.list_history(USER, room.channel_id, None, 50)
 
     assert page.messages[0].reactions == []
+
+
+async def test_history_shows_which_messages_are_pinned():
+    room = channel(USER_ID)
+    older, newer = messages_in(room, 1, 2)
+    fakes = fakes_for(room, [older, newer])
+    fakes.pins.rows = {older.id: saved_pin(older, USER_ID)}
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 50)
+
+    assert {message.seq: message.pinned for message in page.messages} == {1: True, 2: False}

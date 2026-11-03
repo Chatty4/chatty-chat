@@ -14,6 +14,7 @@ from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
     MessageRepository,
+    PinRepository,
     ReactionRepository,
     ReadStateRepository,
 )
@@ -24,6 +25,7 @@ from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
 from app.services.health_service import HealthService
 from app.services.message_service import MessageService
+from app.services.pin_service import PinService
 from app.services.reaction_service import ReactionService
 from app.services.sync_service import SyncService
 
@@ -92,12 +94,29 @@ def get_message_service(
         ChannelEventRepository(session),
         ReadStateRepository(session),
         ReactionRepository(session),
+        PinRepository(session),
         access,
         bus,
     )
 
 
 MessageServiceDep = Annotated[MessageService, Depends(get_message_service)]
+
+
+def get_pin_service(session: SessionDep, access: AccessServiceDep, bus: EventBusDep) -> PinService:
+    return PinService(
+        session,
+        MessageRepository(session),
+        PinRepository(session),
+        ReactionRepository(session),
+        ChannelCounterRepository(session),
+        ChannelEventRepository(session),
+        access,
+        bus,
+    )
+
+
+PinServiceDep = Annotated[PinService, Depends(get_pin_service)]
 
 
 def get_gateway(conn: HTTPConnection) -> Gateway:

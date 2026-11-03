@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 
-from app.api.routers import messages, reactions, sync, ws
+from app.api.routers import messages, pins, reactions, sync, ws
 
 api_router = APIRouter()
 api_router.include_router(messages.router)
+api_router.include_router(pins.router)
 api_router.include_router(reactions.router)
 api_router.include_router(sync.router)
 api_router.include_router(ws.router)
