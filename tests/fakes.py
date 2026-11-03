@@ -242,13 +242,13 @@ class FakeCounters:
 class FakeChannelEvents:
     """
     `rows` are the inserted events; `stored` are what list_events_after finds.
-    `cleared` records each clear_message_text call as (channel_id, seq, message_id).
+    `cleared` records each clear_message_text call as (channel_id, seq, message_id, was_edited).
     """
 
     def __init__(self, stored: list[ChannelEvent] | None = None) -> None:
         self.rows: list[tuple[uuid.UUID, int, str, dict[str, Any]]] = []
         self.stored = stored or []
-        self.cleared: list[tuple[uuid.UUID, int, uuid.UUID]] = []
+        self.cleared: list[tuple[uuid.UUID, int, uuid.UUID, bool]] = []
 
     async def insert_channel_event(
         self, channel_id: uuid.UUID, seq: int, event_type: str, payload: dict[str, Any]
@@ -256,9 +256,9 @@ class FakeChannelEvents:
         self.rows.append((channel_id, seq, event_type, payload))
 
     async def clear_message_text(
-        self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID
+        self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID, was_edited: bool
     ) -> None:
-        self.cleared.append((channel_id, seq, message_id))
+        self.cleared.append((channel_id, seq, message_id, was_edited))
 
     async def list_events_after(
         self, channel_id: uuid.UUID, after_seq: int, limit: int

@@ -85,9 +85,21 @@ async def test_author_deletes_their_message():
 
     assert fakes.counters.last_seq == 8
     assert_deleted(fakes, message, USER)
-    assert fakes.events.cleared == [(message.channel_id, 3, message.id)]  # its own seq, not 8
+    # its own seq, not 8; never edited, so its message.edited events aren't scanned
+    assert fakes.events.cleared == [(message.channel_id, 3, message.id, False)]
     # its reactions go too, without reaction.removed events; other messages keep theirs
     assert fakes.reactions.rows == [(other_message_id, USER_ID, "👍")]
+
+
+async def test_deleting_an_edited_message_clears_its_edit_events():
+    room = channel(USER_ID, OTHER_ID)
+    message = message_in(room)
+    message.edited_at = datetime(2026, 1, 1, tzinfo=UTC)
+    fakes = fakes_for(room, message)
+
+    await fakes.service.delete(USER, message.id)
+
+    assert fakes.events.cleared == [(message.channel_id, 3, message.id, True)]
 
 
 async def test_channel_owner_deletes_someone_elses_message():
