@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, literal, select, update
+from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,3 +80,17 @@ class ChannelEventRepository:
         # shows it.
         if was_edited:
             await self._session.execute(edited)
+
+    async def delete_events_before(self, cutoff: datetime) -> int:
+        """Each channel loses only its oldest events, so sync can still see what was cleaned up."""
+        old = (
+            select(ChannelEvent.channel_id, func.max(ChannelEvent.seq).label("last_old_seq"))
+            .where(ChannelEvent.created_at < cutoff)
+            .group_by(ChannelEvent.channel_id)
+            .subquery()
+        )
+        stmt = delete(ChannelEvent).where(
+            ChannelEvent.channel_id == old.c.channel_id,
+            ChannelEvent.seq <= old.c.last_old_seq,
+        )
+        return (await self._session.execute(stmt)).rowcount  # type: ignore[attr-defined]
