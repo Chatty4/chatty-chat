@@ -1,8 +1,9 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.clients.core import CoreClient
@@ -23,6 +24,7 @@ from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessag
 from app.schemas.sync import ChannelSyncResult
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
+from app.services.event_cleanup import clean_up_events
 from app.services.message_service import MessageService
 from app.services.sync_service import SyncService
 from tests.fakes import FakeBus, FakeCore, channel, memberships
@@ -106,12 +108,15 @@ async def test_sync_and_events_return_every_event_after_the_cursor(sessions, roo
 async def test_cleaned_up_events_are_gap_too_large(sessions, room):
     for body in ("a", "b", "c"):
         await send(sessions, room, body)
-    async with sessions.begin() as session:  # what the nightly cleanup (CHAT-191) will do
+    now = datetime.now(UTC)
+    async with sessions.begin() as session:  # seq 1 and 2 become older than 30 days
         await session.execute(
-            delete(ChannelEvent).where(
-                ChannelEvent.channel_id == room.channel_id, ChannelEvent.seq <= 2
-            )
+            update(ChannelEvent)
+            .where(ChannelEvent.channel_id == room.channel_id, ChannelEvent.seq <= 2)
+            .values(created_at=now - timedelta(days=31))
         )
+    async with sessions() as session:
+        await clean_up_events(session, now)
 
     async with sessions() as session:
         found = (await sync(session, room).sync(USER, {room.channel_id: 0})).channels
