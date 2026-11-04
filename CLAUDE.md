@@ -52,6 +52,7 @@ app/
   repositories/       database queries only
   services/           business rules, transactions, events
   clients/            chatty-core internal API (httpx), Redis, later Kafka and MinIO
+  jobs/               scripts run outside the web server (`python -m app.jobs.clean_up_events`)
   api/
     deps.py           dependency wiring: session, Redis, services, current user
     error_handlers.py app exceptions -> HTTP status + contract error body
