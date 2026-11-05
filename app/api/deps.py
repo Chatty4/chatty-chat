@@ -29,6 +29,7 @@ from app.services.message_service import MessageService
 from app.services.pin_service import PinService
 from app.services.presence_service import PresenceService
 from app.services.reaction_service import ReactionService
+from app.services.read_state_service import ReadStateService
 from app.services.sync_service import SyncService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -135,6 +136,15 @@ def get_sync_service(session: SessionDep, access: AccessServiceDep) -> SyncServi
 
 
 SyncServiceDep = Annotated[SyncService, Depends(get_sync_service)]
+
+
+def get_read_state_service(session: SessionDep, access: AccessServiceDep) -> ReadStateService:
+    return ReadStateService(
+        session, ReadStateRepository(session), ChannelCounterRepository(session), access
+    )
+
+
+ReadStateServiceDep = Annotated[ReadStateService, Depends(get_read_state_service)]
 
 
 def get_reaction_service(
