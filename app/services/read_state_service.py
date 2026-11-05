@@ -2,9 +2,11 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.codes import ErrorCode
+from app.core.exceptions import PermissionDenied
 from app.repositories import ChannelCounterRepository, ReadStateRepository
 from app.schemas.core import Memberships
-from app.schemas.read_state import MarkReadResponse
+from app.schemas.read_state import ChannelUnread, MarkReadResponse, UnreadResponse
 from app.services.access_service import AccessService
 
 
@@ -47,4 +49,19 @@ class ReadStateService:
             last_read_seq=position,
             unread=counts.unread,
             mentions=counts.mentions,
+        )
+
+    async def list_unread(self, user: Memberships, team_id: uuid.UUID) -> UnreadResponse:
+        """Unread counts of every channel the user is in, in one team (the sidebar badges)."""
+        if not any(team.team_id == team_id for team in user.teams):
+            raise PermissionDenied(ErrorCode.NOT_A_TEAM_MEMBER)
+
+        channel_ids = [c.channel_id for c in user.channels if c.team_id == team_id]
+        counts = await self._read_state.count_unread(user.user_id, channel_ids)
+
+        return UnreadResponse(
+            channels=[
+                ChannelUnread(channel_id=c.channel_id, unread=c.unread, mentions=c.mentions)
+                for c in counts
+            ]
         )
