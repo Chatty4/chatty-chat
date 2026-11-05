@@ -54,13 +54,13 @@ class Gateway:
         self, user_id: uuid.UUID, socket: Socket, channel_ids: list[uuid.UUID]
     ) -> None:
         self._connections.add(user_id, socket)
-        first = [cid for cid in channel_ids if self._connections.join(socket, cid)]
+        first = [cid for cid in channel_ids if self._connections.channels.join(socket, cid)]
         await self._subscribe(first)
 
     async def disconnect(self, user_id: uuid.UUID, socket: Socket) -> None:
         self._watching.pop(socket, None)
         self._connections.remove(user_id, socket)
-        await self._unsubscribe(self._connections.leave_all(socket))
+        await self._unsubscribe(self._connections.channels.leave_all(socket))
 
     async def watch(self, socket: Socket, user: Memberships, channel_id: uuid.UUID) -> bool:
         """False when the channel isn't public in one of the user's teams (cannot_watch)."""
@@ -74,11 +74,11 @@ class Gateway:
         watched = self._watching.get(socket)
         if watched is not None and watched.channel_id == channel_id:
             return True  # already watching it
-        if socket in self._connections.in_channel(channel_id):
+        if socket in self._connections.channels.members(channel_id):
             return True  # already a member: its events arrive anyway, and unwatch mustn't leave
         await self.unwatch(socket)  # one per socket: the new watch replaces the old one
         self._watching[socket] = Watched(channel_id, team_id)
-        if self._connections.join(socket, channel_id):
+        if self._connections.channels.join(socket, channel_id):
             await self._subscribe([channel_id])
         return True
 
@@ -88,7 +88,7 @@ class Gateway:
         if watched is None or channel_id not in (None, watched.channel_id):
             return
         del self._watching[socket]
-        if self._connections.leave(socket, watched.channel_id):
+        if self._connections.channels.leave(socket, watched.channel_id):
             await self._unsubscribe([watched.channel_id])
 
     async def run(self) -> None:
@@ -103,7 +103,7 @@ class Gateway:
                     if reconnect:
                         # Pub/sub doesn't replay what was sent while Redis was down.
                         await self._close_all(CloseCode.GOING_AWAY, "gateway_restart")
-                    await self._subscribe(self._connections.channel_ids())
+                    await self._subscribe(self._connections.channels.ids())
                     backoff = 1
                     async for message in pubsub.listen():
                         if message["type"] != "message":
@@ -126,7 +126,7 @@ class Gateway:
             logger.warning("Ignoring malformed channel event: %.200s", raw)
             return
         frame = {"type": "event", "event": event.model_dump(mode="json")}
-        await self._send_all(self._connections.in_channel(event.channel_id), frame)
+        await self._send_all(self._connections.channels.members(event.channel_id), frame)
 
     async def handle_core_event(self, raw: str) -> None:
         try:
@@ -138,7 +138,7 @@ class Gateway:
                     data = ChannelUpdatedData.model_validate(event.data)
                     # the WebSocket message type (api-chat.md), not the core event type
                     frame = {"type": "channel.updated"} | data.model_dump(mode="json")
-                    await self._send_all(self._connections.in_channel(data.channel_id), frame)
+                    await self._send_all(self._connections.channels.members(data.channel_id), frame)
                 case CoreEventType.USER_DEACTIVATED:
                     data = UserData.model_validate(event.data)
                     for socket in list(self._connections.sockets(data.user_id)):
@@ -157,7 +157,7 @@ class Gateway:
     async def _membership_changed(self, data: MembershipChangedData) -> None:
         sockets = list(self._connections.sockets(data.user_id))
         if data.action == MembershipAction.ADDED:
-            first = [self._connections.join(socket, data.channel_id) for socket in sockets]
+            first = [self._connections.channels.join(socket, data.channel_id) for socket in sockets]
             if any(first):
                 await self._subscribe([data.channel_id])
             for socket in sockets:
@@ -165,7 +165,7 @@ class Gateway:
                 if watched is not None and watched.channel_id == data.channel_id:
                     del self._watching[socket]  # the watch becomes a normal subscription
         elif data.action == MembershipAction.REMOVED:
-            last = [self._connections.leave(socket, data.channel_id) for socket in sockets]
+            last = [self._connections.channels.leave(socket, data.channel_id) for socket in sockets]
             if any(last):
                 await self._unsubscribe([data.channel_id])
 
@@ -180,7 +180,7 @@ class Gateway:
         except TimeoutError:
             # The client stopped reading: stop sending to it, and close it so it reconnects and
             # /syncs what it missed. In the background, since it won't answer the close either.
-            await self._unsubscribe(self._connections.leave_all(socket))
+            await self._unsubscribe(self._connections.channels.leave_all(socket))
             task = asyncio.create_task(self._close(socket, CloseCode.GOING_AWAY, "too_slow"))
             self._closing.add(task)
             task.add_done_callback(self._closing.discard)

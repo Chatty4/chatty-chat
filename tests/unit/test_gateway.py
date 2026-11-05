@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.schemas.core import Memberships, TeamMembership
+from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.schemas.events import ChannelEvent
 from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
@@ -105,7 +105,7 @@ async def test_after_disconnect_the_socket_gets_no_more_events(gateway, registry
 
     assert socket.frames == []
     assert registry.sockets(user_id) == set()
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_user_without_channels_joins_none(gateway, registry):
@@ -115,7 +115,7 @@ async def test_user_without_channels_joins_none(gateway, registry):
     await gateway.connect(user_id, socket, [])
 
     assert registry.sockets(user_id) == {socket}
-    assert registry.channel_ids() == []
+    assert registry.channels.ids() == []
 
 
 @pytest.mark.parametrize(
@@ -155,7 +155,7 @@ async def test_removed_stops_delivering_the_channel(gateway, registry):
     await gateway.handle_channel_event(channel_event(channel_id).model_dump_json())
 
     assert socket.frames == []
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_removed_keeps_other_members_of_the_channel(gateway):
@@ -179,7 +179,7 @@ async def test_settings_changes_nothing(gateway, registry):
 
     await gateway.handle_core_event(membership_changed(user_id, channel_id, "settings"))
 
-    assert registry.in_channel(channel_id) == {socket}
+    assert registry.channels.members(channel_id) == {socket}
     assert socket.frames == []
 
 
@@ -242,7 +242,7 @@ async def test_ignored_core_events_change_nothing(gateway, registry, raw):
 
     await gateway.handle_core_event(raw)
 
-    assert registry.in_channel(channel_id) == {socket}
+    assert registry.channels.members(channel_id) == {socket}
     assert socket.frames == []
     assert socket.closed is None
 
@@ -250,7 +250,9 @@ async def test_ignored_core_events_change_nothing(gateway, registry, raw):
 def viewer(*public_channel_ids: uuid.UUID, team_id: uuid.UUID | None = None) -> Memberships:
     """A user in one team whose public channels are public_channel_ids."""
     team = TeamMembership(
-        team_id=team_id or uuid.uuid4(), role="member", public_channel_ids=list(public_channel_ids)
+        team_id=team_id or uuid.uuid4(),
+        role=TeamRole.MEMBER,
+        public_channel_ids=list(public_channel_ids),
     )
     return memberships(uuid.uuid4(), teams=[team])
 
@@ -283,7 +285,7 @@ async def test_watch_of_a_channel_not_public_in_the_users_teams_is_refused(gatew
     assert await gateway.watch(socket, user, channel_id) is False
     await deliver(gateway, channel_id)
 
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
     assert socket.frames == []
 
 
@@ -299,7 +301,7 @@ async def test_a_new_watch_replaces_the_old_one(gateway, registry):
     frame = await deliver(gateway, second)
 
     assert socket.frames == [frame]
-    assert registry.in_channel(first) == set()
+    assert registry.channels.members(first) == set()
 
 
 async def test_replacing_a_watch_keeps_other_watchers_of_the_old_channel(gateway):
@@ -328,7 +330,7 @@ async def test_watching_the_same_channel_twice_is_one_watch(gateway, registry):
     assert await gateway.watch(socket, user, channel_id) is True
     await gateway.unwatch(socket, channel_id)
 
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_unwatch_stops_the_events(gateway, registry):
@@ -342,7 +344,7 @@ async def test_unwatch_stops_the_events(gateway, registry):
     await deliver(gateway, channel_id)
 
     assert socket.frames == []
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_unwatch_of_another_channel_keeps_the_watch(gateway):
@@ -365,7 +367,7 @@ async def test_unwatch_without_a_watch_does_nothing(gateway, registry):
 
     await gateway.unwatch(socket, channel_id)
 
-    assert registry.in_channel(channel_id) == {socket}
+    assert registry.channels.members(channel_id) == {socket}
 
 
 async def test_watch_and_unwatch_of_a_joined_channel_keep_the_membership(gateway):
@@ -447,7 +449,7 @@ async def test_leaving_the_team_ends_its_watch_on_every_tab(gateway, registry, a
     await deliver(gateway, channel_id)
 
     assert first_tab.frames == second_tab.frames == []
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 @pytest.mark.parametrize("action", ["joined", "role_changed"])
@@ -592,5 +594,5 @@ async def test_a_stuck_socket_is_dropped_and_does_not_hold_up_the_others(
 
     assert healthy.frames == [event_frame(event)]
     assert stuck.closed == (1001, "too_slow")
-    assert registry.in_channel(channel_id) == {healthy}
+    assert registry.channels.members(channel_id) == {healthy}
     await asyncio.gather(*gateway._closing)  # the close gives up after its own timeout
