@@ -486,13 +486,14 @@ class SyncFakes:
 class FakePresence:
     """
     Stands in for PresenceStore. `lines` are the open sockets per user, `heartbeats` the refreshed
-    ones and `sent` the online and offline calls.
+    ones, `sent` the online and offline calls and `online` what list_online finds per team.
     """
 
     def __init__(self) -> None:
         self.lines: dict[uuid.UUID, set[str]] = {}
         self.heartbeats: list[tuple[uuid.UUID, str]] = []
         self.sent: list[tuple[str, uuid.UUID, list[uuid.UUID]]] = []
+        self.online: dict[uuid.UUID, list[uuid.UUID]] = {}
 
     async def socket_opened(self, user_id: uuid.UUID, socket_id: str) -> bool:
         first = not self.lines.get(user_id)
@@ -511,6 +512,9 @@ class FakePresence:
 
     async def go_offline(self, user_id: uuid.UUID, team_ids: Iterable[uuid.UUID]) -> None:
         self.sent.append(("offline", user_id, list(team_ids)))
+
+    async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
+        return self.online.get(team_id, [])
 
 
 class FakeSocket:

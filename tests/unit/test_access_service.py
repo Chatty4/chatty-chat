@@ -73,3 +73,17 @@ async def test_member_of_open_channel_can_write():
     )
 
     assert result == open_channel
+
+
+def test_a_team_of_the_user_passes_the_team_check():
+    team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+
+    AccessService(FakeCore()).check_in_team(memberships(USER_ID, teams=[team]), team.team_id)
+
+
+def test_another_team_is_403():
+    team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+
+    with pytest.raises(AppError) as error:
+        AccessService(FakeCore()).check_in_team(memberships(USER_ID, teams=[team]), uuid.uuid4())
+    assert (error.value.status_code, error.value.code) == (403, ErrorCode.NOT_A_TEAM_MEMBER)
