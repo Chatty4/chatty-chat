@@ -47,7 +47,7 @@ async def assert_refused(
         await fakes.service.mark_read(user, channel_id, 5)
     assert (error.value.status_code, error.value.code) == (status, code)
     assert fakes.read_state.positions == {}
-    assert fakes.log == []  # refused before the transaction
+    assert fakes.log == []  # refused before the transaction, and nothing sent to other tabs
 
 
 async def test_mark_read_moves_the_position_and_returns_the_counts():
@@ -64,7 +64,14 @@ async def test_mark_read_moves_the_position_and_returns_the_counts():
     }
     assert fakes.read_state.positions == {(USER_ID, room.channel_id): 112}
     assert fakes.read_state.counted == [(USER_ID, [room.channel_id])]
-    assert fakes.log == ["commit"]
+    # the other tabs get the counts, only after the commit
+    assert fakes.log == ["commit", "send_to_user"]
+    assert fakes.bus.sent == [
+        (
+            USER_ID,
+            {"type": "unread", "channel_id": str(room.channel_id), "unread": 4, "mentions": 1},
+        )
+    ]
 
 
 async def test_a_seq_past_the_last_message_is_lowered_to_it():

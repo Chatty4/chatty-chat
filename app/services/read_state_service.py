@@ -2,12 +2,12 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.codes import ErrorCode
-from app.core.exceptions import PermissionDenied
 from app.repositories import ChannelCounterRepository, ReadStateRepository
 from app.schemas.core import Memberships
 from app.schemas.read_state import ChannelUnread, MarkReadResponse, UnreadResponse
+from app.schemas.ws import UnreadMessage
 from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
 
 
 class ReadStateService:
@@ -19,11 +19,13 @@ class ReadStateService:
         read_state: ReadStateRepository,
         counters: ChannelCounterRepository,
         access: AccessService,
+        bus: EventBus,
     ) -> None:
         self._session = session
         self._read_state = read_state
         self._counters = counters
         self._access = access
+        self._bus = bus
 
     async def mark_read(
         self, user: Memberships, channel_id: uuid.UUID, seq: int
@@ -42,7 +44,12 @@ class ReadStateService:
             # inside the transaction, so the counts see the position written above
             [counts] = await self._read_state.count_unread(user.user_id, [channel_id])
 
-        # Phase 4: publish the unread message to the user's other tabs here, after the commit
+        # After the commit, so no tab shows counts that weren't saved. The tab that sent this
+        # request gets it too: a REST request can't tell which socket is its own.
+        await self._bus.send_to_user(
+            user.user_id,
+            UnreadMessage(channel_id=channel_id, unread=counts.unread, mentions=counts.mentions),
+        )
 
         return MarkReadResponse(
             channel_id=channel_id,
@@ -53,8 +60,7 @@ class ReadStateService:
 
     async def list_unread(self, user: Memberships, team_id: uuid.UUID) -> UnreadResponse:
         """Unread counts of every channel the user is in, in one team (the sidebar badges)."""
-        if not any(team.team_id == team_id for team in user.teams):
-            raise PermissionDenied(ErrorCode.NOT_A_TEAM_MEMBER)
+        self._access.check_in_team(user, team_id)
 
         channel_ids = [c.channel_id for c in user.channels if c.team_id == team_id]
         counts = await self._read_state.count_unread(user.user_id, channel_ids)

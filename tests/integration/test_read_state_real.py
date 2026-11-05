@@ -14,8 +14,9 @@ from app.repositories.read_state import UNREAD_CAP, UnreadCounts
 from app.schemas.core import CoreChannel
 from app.schemas.read_state import MarkReadResponse
 from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
 from app.services.read_state_service import ReadStateService
-from tests.fakes import FakeCore, channel, memberships
+from tests.fakes import FakeBus, FakeCore, channel, memberships
 
 pytestmark = pytest.mark.integration
 
@@ -78,6 +79,7 @@ async def mark_read(sessions, room: CoreChannel, seq: int) -> MarkReadResponse:
             ReadStateRepository(session),
             ChannelCounterRepository(session),
             AccessService(cast(CoreClient, FakeCore(channel=room))),
+            cast(EventBus, FakeBus()),
         )
         return await service.mark_read(USER, room.channel_id, seq)
 

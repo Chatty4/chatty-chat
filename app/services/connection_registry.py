@@ -58,16 +58,25 @@ class ConnectionRegistry[T]:
         self.channels: SocketGroups[T] = SocketGroups()
         self.teams: SocketGroups[T] = SocketGroups()
 
-    def add(self, user_id: uuid.UUID, socket: T) -> None:
+    def add(self, user_id: uuid.UUID, socket: T) -> bool:
+        """True when this is the user's first socket here: subscribe to the user's channel."""
+        first = user_id not in self._sockets
         self._sockets[user_id].add(socket)
+        return first
 
-    def remove(self, user_id: uuid.UUID, socket: T) -> None:
+    def remove(self, user_id: uuid.UUID, socket: T) -> bool:
+        """True when this was the user's last socket here: unsubscribe from the user's channel."""
         sockets = self._sockets.get(user_id)
-        if sockets is None:
-            return
+        if sockets is None or socket not in sockets:
+            return False
         sockets.discard(socket)
-        if not sockets:
-            del self._sockets[user_id]
+        if sockets:
+            return False
+        del self._sockets[user_id]
+        return True
+
+    def user_ids(self) -> list[uuid.UUID]:
+        return list(self._sockets)
 
     def all_sockets(self) -> list[T]:
         return [socket for sockets in self._sockets.values() for socket in sockets]

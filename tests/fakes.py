@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, cast
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
@@ -394,15 +395,23 @@ class FakePins:
 
 
 class FakeBus:
-    """Records what was published, and writes "publish" to `log` to show when."""
+    """
+    Records what was published, and writes "publish" or "send_to_user" to `log` to show when.
+    `sent` are the live messages for users, as (user_id, the JSON the gateway forwards).
+    """
 
     def __init__(self, log: list[str] | None = None) -> None:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
+        self.sent: list[tuple[uuid.UUID, dict[str, Any]]] = []
 
     async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
         self.published.append((event.channel_id, event.model_dump(mode="json")))
+
+    async def send_to_user(self, user_id: uuid.UUID, message: BaseModel) -> None:
+        self._log.append("send_to_user")
+        self.sent.append((user_id, message.model_dump(mode="json")))
 
 
 class MessageFakes:
@@ -534,7 +543,7 @@ class FakePresence:
 
 
 class ReadStateFakes:
-    """A ReadStateService on fakes. `log` shows commit and rollback."""
+    """A ReadStateService on fakes. `log` shows the order of commit, rollback and send_to_user."""
 
     def __init__(
         self,
@@ -545,11 +554,13 @@ class ReadStateFakes:
         self.log: list[str] = []
         self.read_state = FakeReadState(counts)
         self.counters = FakeCounters(last_seq)
+        self.bus = FakeBus(self.log)
         self.service = ReadStateService(
             cast(AsyncSession, FakeSession(self.log)),
             cast(ReadStateRepository, self.read_state),
             cast(ChannelCounterRepository, self.counters),
             AccessService(cast(CoreClient, core)),
+            cast(EventBus, self.bus),
         )
 
 
