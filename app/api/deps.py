@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
+from app.clients.presence import PresenceStore
 from app.core.exceptions import Unauthorized
 from app.core.security import decode_access_token
 from app.db.session import get_session
@@ -26,6 +27,7 @@ from app.services.gateway import Gateway
 from app.services.health_service import HealthService
 from app.services.message_service import MessageService
 from app.services.pin_service import PinService
+from app.services.presence_service import PresenceService
 from app.services.reaction_service import ReactionService
 from app.services.sync_service import SyncService
 
@@ -150,3 +152,10 @@ def get_reaction_service(
 
 
 ReactionServiceDep = Annotated[ReactionService, Depends(get_reaction_service)]
+
+
+def get_presence_service(redis: RedisDep, access: AccessServiceDep) -> PresenceService:
+    return PresenceService(PresenceStore(redis), access)
+
+
+PresenceServiceDep = Annotated[PresenceService, Depends(get_presence_service)]

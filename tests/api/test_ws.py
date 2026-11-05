@@ -5,20 +5,22 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_core_client, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
+from app.clients.presence import PresenceStore
 from app.core.exceptions import ServiceUnavailable
-from app.schemas.core import Memberships, TeamMembership
+from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
-from tests.fakes import FakeCore, FakeSocket, memberships
+from tests.fakes import FakeCore, FakePresence, FakeSocket, memberships
 
 USER_ID = uuid.uuid4()
 URL = "/api/chat/v1/ws"
@@ -43,10 +45,15 @@ def registry() -> RecordingRegistry:
 
 
 @pytest.fixture
-def gateway(app, registry) -> Gateway:
+def presence() -> FakePresence:
+    return FakePresence()
+
+
+@pytest.fixture
+def gateway(app, registry, presence) -> Gateway:
     # Without it get_gateway reads app.state.gateway, which TestClient never sets (no lifespan).
     # run() never starts either, so the gateway never touches Redis.
-    gateway = Gateway(MagicMock(), registry)
+    gateway = Gateway(MagicMock(), registry, cast(PresenceStore, presence))
     app.dependency_overrides[get_gateway] = lambda: gateway
     return gateway
 
@@ -148,12 +155,12 @@ def test_socket_joins_its_channels_and_leaves_them_after(app, ws_client, registr
         assert registry.added.wait(timeout=2)
         # connect() runs add() before join(), so wait for the join too
         for _ in range(20):
-            if registry.in_channel(channel_id):
+            if registry.channels.members(channel_id):
                 break
             time.sleep(0.05)
-        assert registry.in_channel(channel_id) == registry.sockets(USER_ID)
+        assert registry.channels.members(channel_id) == registry.sockets(USER_ID)
 
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 def test_socket_closes_with_4002_without_heartbeats(app, ws_client, make_token, monkeypatch):
@@ -211,8 +218,8 @@ def test_heartbeat_timeout_after_the_gateway_closed_the_socket_is_quiet(
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
     connect = gateway.connect
 
-    async def connect_then_drop(user_id, socket, channel_ids):  # like _send's too_slow close
-        await connect(user_id, socket, channel_ids)
+    async def connect_then_drop(user_id, socket, channel_ids, team_ids):  # like _send's too_slow
+        await connect(user_id, socket, channel_ids, team_ids)
         await socket.close(1001, "too_slow")
 
     monkeypatch.setattr(gateway, "connect", connect_then_drop)
@@ -226,15 +233,28 @@ def test_heartbeat_timeout_after_the_gateway_closed_the_socket_is_quiet(
     assert closed.value.code == 1001
 
 
+class HeartbeatSocket(FakeSocket):
+    """A FakeSocket with the state a heartbeat writes to. The gateway needs it hashable."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state = SimpleNamespace()
+
+
 def fake_socket() -> SimpleNamespace:
     """Only state, no send_json: a test using it fails if handle_message sends anything."""
     return SimpleNamespace(state=SimpleNamespace())
 
 
+async def handle(socket: object, raw: str, gateway: Gateway, user: Memberships) -> bool:
+    """handle_message with a fake socket, which only duck-types a WebSocket."""
+    return await handle_message(cast(WebSocket, socket), raw, gateway, user)
+
+
 def watcher_of(*public_channel_ids: uuid.UUID) -> Memberships:
     """USER_ID in one team whose public channels are public_channel_ids."""
     team = TeamMembership(
-        team_id=uuid.uuid4(), role="member", public_channel_ids=list(public_channel_ids)
+        team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=list(public_channel_ids)
     )
     return memberships(USER_ID, teams=[team])
 
@@ -247,11 +267,12 @@ CANNOT_WATCH = {
 
 
 async def test_heartbeat_stores_visible_and_last_heartbeat_at(gateway):
-    socket = fake_socket()
+    socket = HeartbeatSocket()
+    await gateway.connect(USER_ID, socket, [])
     before = asyncio.get_running_loop().time()
     raw = '{"type": "heartbeat", "visible": false}'
 
-    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is True
+    assert await handle(socket, raw, gateway, memberships(USER_ID)) is True
 
     assert socket.state.visible is False
     assert socket.state.last_heartbeat_at >= before
@@ -287,10 +308,10 @@ async def test_heartbeat_stores_visible_and_last_heartbeat_at(gateway):
 async def test_invalid_messages_are_ignored(gateway, registry, raw):
     socket = fake_socket()
 
-    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is False
+    assert await handle(socket, raw, gateway, memberships(USER_ID)) is False
 
     assert vars(socket.state) == {}
-    assert registry.channel_ids() == []
+    assert registry.channels.ids() == []
 
 
 async def test_watch_of_a_channel_not_public_in_the_users_teams_replies_cannot_watch(
@@ -301,11 +322,11 @@ async def test_watch_of_a_channel_not_public_in_the_users_teams_replies_cannot_w
     channel_id = uuid.uuid4()
     raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
 
-    assert await handle_message(socket, raw, gateway, watcher_of(uuid.uuid4())) is False
+    assert await handle(socket, raw, gateway, watcher_of(uuid.uuid4())) is False
 
     assert socket.frames == [CANNOT_WATCH]
     assert socket.closed is None
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_watch_of_a_public_channel_subscribes_without_a_reply(gateway, registry):
@@ -313,10 +334,10 @@ async def test_watch_of_a_public_channel_subscribes_without_a_reply(gateway, reg
     channel_id = uuid.uuid4()
     raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
 
-    assert await handle_message(socket, raw, gateway, watcher_of(channel_id)) is False
+    assert await handle(socket, raw, gateway, watcher_of(channel_id)) is False
 
     assert socket.frames == []
-    assert registry.in_channel(channel_id) == {socket}
+    assert registry.channels.members(channel_id) == {socket}
 
 
 async def test_unwatch_ends_the_watch_without_a_reply(gateway, registry):
@@ -326,17 +347,17 @@ async def test_unwatch_ends_the_watch_without_a_reply(gateway, registry):
     await gateway.watch(socket, user, channel_id)
     raw = json.dumps({"type": "unwatch", "channel_id": str(channel_id)})
 
-    assert await handle_message(socket, raw, gateway, user) is False
+    assert await handle(socket, raw, gateway, user) is False
 
     assert socket.frames == []
-    assert registry.in_channel(channel_id) == set()
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_unwatch_without_a_watch_replies_nothing(gateway):
     socket = FakeSocket()
     raw = json.dumps({"type": "unwatch", "channel_id": str(uuid.uuid4())})
 
-    assert await handle_message(socket, raw, gateway, memberships(USER_ID)) is False
+    assert await handle(socket, raw, gateway, memberships(USER_ID)) is False
 
     assert socket.frames == []
 
@@ -358,3 +379,17 @@ def test_watch_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, mo
             ws.receive_json()
 
     assert closed.value.code == 4002
+
+
+def test_a_socket_goes_online_in_the_users_teams_and_offline_after(
+    app, ws_client, presence, make_token
+):
+    user = watcher_of()
+    team_id = user.teams[0].team_id
+    use_core(app, FakeCore(memberships=user))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}"):
+        pass
+
+    assert presence.sent == [("online", USER_ID, [team_id]), ("offline", USER_ID, [team_id])]

@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, cast
@@ -480,6 +481,40 @@ class SyncFakes:
             cast(ChannelCounterRepository, self.counters),
             AccessService(cast(CoreClient, core)),
         )
+
+
+class FakePresence:
+    """
+    Stands in for PresenceStore. `lines` are the open sockets per user, `heartbeats` the refreshed
+    ones, `sent` the online and offline calls and `online` what list_online finds per team.
+    """
+
+    def __init__(self) -> None:
+        self.lines: dict[uuid.UUID, set[str]] = {}
+        self.heartbeats: list[tuple[uuid.UUID, str]] = []
+        self.sent: list[tuple[str, uuid.UUID, list[uuid.UUID]]] = []
+        self.online: dict[uuid.UUID, list[uuid.UUID]] = {}
+
+    async def socket_opened(self, user_id: uuid.UUID, socket_id: str) -> bool:
+        first = not self.lines.get(user_id)
+        self.lines.setdefault(user_id, set()).add(socket_id)
+        return first
+
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
+        self.heartbeats.append((user_id, socket_id))
+
+    async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
+        self.lines.get(user_id, set()).discard(socket_id)
+        return not self.lines.get(user_id)
+
+    async def go_online(self, user_id: uuid.UUID, team_ids: Iterable[uuid.UUID]) -> None:
+        self.sent.append(("online", user_id, list(team_ids)))
+
+    async def go_offline(self, user_id: uuid.UUID, team_ids: Iterable[uuid.UUID]) -> None:
+        self.sent.append(("offline", user_id, list(team_ids)))
+
+    async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
+        return self.online.get(team_id, [])
 
 
 class FakeSocket:

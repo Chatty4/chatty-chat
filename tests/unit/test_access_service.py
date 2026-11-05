@@ -4,7 +4,7 @@ import pytest
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, Unauthorized, UserInactive
-from app.schemas.core import TeamMembership
+from app.schemas.core import TeamMembership, TeamRole
 from app.services.access_service import AccessService
 from tests.fakes import FakeCore, channel, memberships
 
@@ -26,7 +26,7 @@ async def test_unknown_user_is_unauthorized():
 async def test_public_channel_not_joined_is_readable_but_not_writable():
     public = channel(uuid.uuid4())  # someone else is the only member
     team = TeamMembership(
-        team_id=public.team_id, role="member", public_channel_ids=[public.channel_id]
+        team_id=public.team_id, role=TeamRole.MEMBER, public_channel_ids=[public.channel_id]
     )
     user = memberships(USER_ID, teams=[team])
     access = AccessService(FakeCore(channel=public))
@@ -73,3 +73,17 @@ async def test_member_of_open_channel_can_write():
     )
 
     assert result == open_channel
+
+
+def test_a_team_of_the_user_passes_the_team_check():
+    team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+
+    AccessService(FakeCore()).check_in_team(memberships(USER_ID, teams=[team]), team.team_id)
+
+
+def test_another_team_is_403():
+    team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+
+    with pytest.raises(AppError) as error:
+        AccessService(FakeCore()).check_in_team(memberships(USER_ID, teams=[team]), uuid.uuid4())
+    assert (error.value.status_code, error.value.code) == (403, ErrorCode.NOT_A_TEAM_MEMBER)

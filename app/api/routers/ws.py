@@ -21,7 +21,7 @@ HEARTBEAT_TIMEOUT_SECONDS = 60
 async def handle_message(
     websocket: WebSocket, raw: str, gateway: Gateway, user: Memberships
 ) -> bool:
-    """Returns True for a valid heartbeat. CHAT-215 refreshes the presence key here."""
+    """Returns True for a valid heartbeat, which also refreshes the user's presence."""
     try:
         message = ClientMessage.validate_json(raw)
     except ValidationError:
@@ -30,6 +30,7 @@ async def handle_message(
         case Heartbeat():
             websocket.state.visible = message.visible
             websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
+            await gateway.heartbeat(user.user_id, websocket)
             return True
         case Watch():
             if not await gateway.watch(websocket, user, message.channel_id):
@@ -73,7 +74,12 @@ async def websocket_endpoint(
 
     # shortcut: a channel removal that arrives while get_user() runs is missed, so this socket
     # can still get that channel's new messages until it reconnects (at most 15 min); CHAT-271.
-    await gateway.connect(user.user_id, websocket, [c.channel_id for c in user.channels])
+    await gateway.connect(
+        user.user_id,
+        websocket,
+        [c.channel_id for c in user.channels],
+        [t.team_id for t in user.teams],
+    )
     try:
         async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
             while True:
