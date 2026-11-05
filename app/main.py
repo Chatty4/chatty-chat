@@ -14,6 +14,7 @@ from app.api.error_handlers import register_exception_handlers
 from app.api.router import api_router
 from app.api.routers import health
 from app.clients.core_events import listen_core_events
+from app.clients.presence import PresenceStore
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.services.connection_registry import ConnectionRegistry
@@ -52,7 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         socket_timeout=2,
         socket_connect_timeout=2,
     )
-    app.state.gateway = Gateway(events_redis, app.state.connections)
+    app.state.gateway = Gateway(events_redis, app.state.connections, PresenceStore(events_redis))
     gateway_task = asyncio.create_task(app.state.gateway.run(), name="gateway")
     events_task = asyncio.create_task(listen_core_events(events_redis), name="core events")
     app.state.background_tasks = (gateway_task, events_task)

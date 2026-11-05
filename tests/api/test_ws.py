@@ -15,11 +15,12 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_core_client, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
+from app.clients.presence import PresenceStore
 from app.core.exceptions import ServiceUnavailable
 from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.services.connection_registry import ConnectionRegistry
 from app.services.gateway import Gateway
-from tests.fakes import FakeCore, FakeSocket, memberships
+from tests.fakes import FakeCore, FakePresence, FakeSocket, memberships
 
 USER_ID = uuid.uuid4()
 URL = "/api/chat/v1/ws"
@@ -44,10 +45,15 @@ def registry() -> RecordingRegistry:
 
 
 @pytest.fixture
-def gateway(app, registry) -> Gateway:
+def presence() -> FakePresence:
+    return FakePresence()
+
+
+@pytest.fixture
+def gateway(app, registry, presence) -> Gateway:
     # Without it get_gateway reads app.state.gateway, which TestClient never sets (no lifespan).
     # run() never starts either, so the gateway never touches Redis.
-    gateway = Gateway(MagicMock(), registry)
+    gateway = Gateway(MagicMock(), registry, cast(PresenceStore, presence))
     app.dependency_overrides[get_gateway] = lambda: gateway
     return gateway
 
@@ -212,8 +218,8 @@ def test_heartbeat_timeout_after_the_gateway_closed_the_socket_is_quiet(
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
     connect = gateway.connect
 
-    async def connect_then_drop(user_id, socket, channel_ids):  # like _send's too_slow close
-        await connect(user_id, socket, channel_ids)
+    async def connect_then_drop(user_id, socket, channel_ids, team_ids):  # like _send's too_slow
+        await connect(user_id, socket, channel_ids, team_ids)
         await socket.close(1001, "too_slow")
 
     monkeypatch.setattr(gateway, "connect", connect_then_drop)
@@ -225,6 +231,14 @@ def test_heartbeat_timeout_after_the_gateway_closed_the_socket_is_quiet(
         time.sleep(1)  # the heartbeat timeout fires while the client is still connected
 
     assert closed.value.code == 1001
+
+
+class HeartbeatSocket(FakeSocket):
+    """A FakeSocket with the state a heartbeat writes to. The gateway needs it hashable."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.state = SimpleNamespace()
 
 
 def fake_socket() -> SimpleNamespace:
@@ -253,7 +267,8 @@ CANNOT_WATCH = {
 
 
 async def test_heartbeat_stores_visible_and_last_heartbeat_at(gateway):
-    socket = fake_socket()
+    socket = HeartbeatSocket()
+    await gateway.connect(USER_ID, socket, [])
     before = asyncio.get_running_loop().time()
     raw = '{"type": "heartbeat", "visible": false}'
 
@@ -364,3 +379,17 @@ def test_watch_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, mo
             ws.receive_json()
 
     assert closed.value.code == 4002
+
+
+def test_a_socket_goes_online_in_the_users_teams_and_offline_after(
+    app, ws_client, presence, make_token
+):
+    user = watcher_of()
+    team_id = user.teams[0].team_id
+    use_core(app, FakeCore(memberships=user))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}"):
+        pass
+
+    assert presence.sent == [("online", USER_ID, [team_id]), ("offline", USER_ID, [team_id])]

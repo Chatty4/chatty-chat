@@ -8,6 +8,7 @@ import pytest
 from redis.asyncio import Redis
 
 from app.clients.core_events import CORE_EVENTS
+from app.clients.presence import PresenceStore
 from app.core.config import get_settings
 from app.schemas.events import ChannelEvent
 from app.services.connection_registry import ConnectionRegistry
@@ -36,7 +37,7 @@ def core_event(event_type: str, **data) -> str:
 
 async def test_core_and_channel_events_reach_a_connected_socket():
     redis = Redis.from_url(get_settings().REDIS_URL, decode_responses=True)
-    gateway = Gateway(redis, ConnectionRegistry())
+    gateway = Gateway(redis, ConnectionRegistry(), PresenceStore(redis))
     task = asyncio.create_task(gateway.run())
     user_id, channel_id = uuid.uuid4(), uuid.uuid4()
     socket = FakeSocket()
