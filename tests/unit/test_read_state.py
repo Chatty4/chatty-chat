@@ -11,24 +11,33 @@ USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
 
 
+def joined(channel_id: uuid.UUID, team_id: uuid.UUID) -> ChannelMembership:
+    """One channel of the memberships response."""
+    return ChannelMembership.model_validate(
+        {
+            "channel_id": channel_id,
+            "team_id": team_id,
+            "kind": "public",
+            "archived": False,
+            "role": "member",
+            "notify_level": "mentions",
+            "muted": False,
+            "hidden": False,
+        }
+    )
+
+
 def member_of(room: CoreChannel) -> Memberships:
     """USER with the channel in its memberships, as chatty-core lists the channels it is in."""
     user = memberships(USER_ID)
-    user.channels = [
-        ChannelMembership.model_validate(
-            {
-                "channel_id": room.channel_id,
-                "team_id": room.team_id,
-                "kind": room.kind,
-                "archived": room.archived,
-                "role": "member",
-                "notify_level": "mentions",
-                "muted": False,
-                "hidden": False,
-            }
-        )
-    ]
+    user.channels = [joined(room.channel_id, room.team_id)]
     return user
+
+
+def in_team(team_id: uuid.UUID, *channel_ids: uuid.UUID, public: list[uuid.UUID] | None = None):
+    """A team membership, and the user's joined channels in that team."""
+    team = TeamMembership(team_id=team_id, role=TeamRole.MEMBER, public_channel_ids=public or [])
+    return team, [joined(channel_id, team_id) for channel_id in channel_ids]
 
 
 async def assert_refused(
@@ -129,3 +138,58 @@ async def test_an_unknown_channel_is_404():
     fakes = ReadStateFakes(FakeCore(channel=None), last_seq=10)
 
     await assert_refused(fakes, USER, uuid.uuid4(), 404, ErrorCode.CHANNEL_NOT_FOUND)
+
+
+# list_unread
+
+TEAM_ID, OTHER_TEAM_ID = uuid.uuid4(), uuid.uuid4()
+
+
+def user_in(*teams_and_channels) -> Memberships:
+    user = memberships(USER_ID, teams=[team for team, _ in teams_and_channels])
+    user.channels = [c for _, channels in teams_and_channels for c in channels]
+    return user
+
+
+async def test_list_unread_has_every_joined_channel_of_the_team_only():
+    a, b, elsewhere = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    user = user_in(in_team(TEAM_ID, a, b), in_team(OTHER_TEAM_ID, elsewhere))
+    fakes = ReadStateFakes(FakeCore(), counts={a: (4, 1), elsewhere: (9, 9)})
+
+    result = await fakes.service.list_unread(user, TEAM_ID)
+
+    assert [c.model_dump() for c in result.channels] == [
+        {"channel_id": a, "unread": 4, "mentions": 1},
+        {"channel_id": b, "unread": 0, "mentions": 0},  # nothing unread still gets a row
+    ]
+    assert fakes.read_state.counted == [(USER_ID, [a, b])]
+    assert fakes.log == []  # read only, no transaction
+
+
+async def test_public_channels_not_joined_get_no_row():
+    a, public = uuid.uuid4(), uuid.uuid4()
+    user = user_in(in_team(TEAM_ID, a, public=[public]))
+    fakes = ReadStateFakes(FakeCore())
+
+    result = await fakes.service.list_unread(user, TEAM_ID)
+
+    assert [c.channel_id for c in result.channels] == [a]
+
+
+async def test_a_team_without_joined_channels_is_an_empty_list():
+    fakes = ReadStateFakes(FakeCore())
+
+    result = await fakes.service.list_unread(user_in(in_team(TEAM_ID)), TEAM_ID)
+
+    assert result.channels == []
+
+
+async def test_list_unread_outside_the_team_is_403():
+    user = user_in(in_team(OTHER_TEAM_ID, uuid.uuid4()))
+    fakes = ReadStateFakes(FakeCore())
+
+    with pytest.raises(AppError) as error:
+        await fakes.service.list_unread(user, TEAM_ID)
+
+    assert (error.value.status_code, error.value.code) == (403, ErrorCode.NOT_A_TEAM_MEMBER)
+    assert fakes.read_state.counted == []
