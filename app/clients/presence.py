@@ -1,0 +1,118 @@
+import logging
+import time
+import uuid
+from collections.abc import Iterable
+from typing import cast
+
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
+
+from app.schemas.presence import PresenceFrame, PresenceStatus
+
+logger = logging.getLogger(__name__)
+
+PRESENCE_TTL_SECONDS = 60  # the same as the heartbeat timeout
+PRESENCE_CHANNEL_PREFIX = "chat.presence:"
+
+
+def presence_key(user_id: uuid.UUID) -> str:
+    return f"presence:{user_id}"
+
+
+def online_key(team_id: uuid.UUID) -> str:
+    return f"online:{team_id}"
+
+
+def presence_channel(team_id: uuid.UUID) -> str:
+    return f"{PRESENCE_CHANNEL_PREFIX}{team_id}"
+
+
+class PresenceStore:
+    """
+    Who is online, shared by every gateway. A Redis error is logged and never closes a socket.
+    presence:{user_id} has one line per open socket: socket ID -> last heartbeat time. Each
+    change runs as one transaction, so two sockets closing at once can't both be the last.
+    """
+
+    def __init__(self, redis: Redis) -> None:
+        self._redis = redis
+
+    async def socket_opened(self, user_id: uuid.UUID, socket_id: str) -> bool:
+        """True when this is the user's first socket."""
+        key = presence_key(user_id)
+        now = time.time()
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.zremrangebyscore(key, "-inf", now - PRESENCE_TTL_SECONDS)
+                pipe.zcard(key)
+                pipe.zadd(key, {socket_id: now})
+                pipe.expire(key, PRESENCE_TTL_SECONDS)
+                _, lines_before, _, _ = await pipe.execute()
+        except RedisError:
+            logger.warning("Presence update failed for user %s", user_id, exc_info=True)
+            return False
+        return lines_before == 0
+
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
+        key = presence_key(user_id)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(key, {socket_id: time.time()})
+                pipe.expire(key, PRESENCE_TTL_SECONDS)
+                await pipe.execute()
+        except RedisError:
+            logger.warning("Presence update failed for user %s", user_id, exc_info=True)
+
+    async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
+        """True when this was the user's last socket."""
+        key = presence_key(user_id)
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                pipe.zrem(key, socket_id)
+                pipe.zremrangebyscore(key, "-inf", time.time() - PRESENCE_TTL_SECONDS)
+                pipe.zcard(key)
+                _, _, lines_left = await pipe.execute()
+        except RedisError:
+            logger.warning("Presence update failed for user %s", user_id, exc_info=True)
+            return False
+        return lines_left == 0
+
+    async def go_online(self, user_id: uuid.UUID, team_ids: Iterable[uuid.UUID]) -> None:
+        for team_id in team_ids:
+            try:
+                await self._redis.sadd(online_key(team_id), str(user_id))  # type: ignore[misc]
+                await self._publish(team_id, user_id, PresenceStatus.ONLINE)
+            except RedisError:
+                logger.warning("Presence update failed for team %s", team_id, exc_info=True)
+
+    async def go_offline(self, user_id: uuid.UUID, team_ids: Iterable[uuid.UUID]) -> None:
+        """Only the gateway that really removes the user sends offline."""
+        for team_id in team_ids:
+            try:
+                if await self._redis.srem(online_key(team_id), str(user_id)):  # type: ignore[misc]
+                    await self._publish(team_id, user_id, PresenceStatus.OFFLINE)
+            except RedisError:
+                logger.warning("Presence update failed for team %s", team_id, exc_info=True)
+
+    async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
+        """
+        The team's online users. Leaves out users whose key expired after a crash, without
+        removing them from the set: that could race with the user reconnecting.
+        """
+        try:
+            online = await self._redis.smembers(online_key(team_id))  # type: ignore[misc]
+            members = cast(list[str], list(online))  # decode_responses: never bytes
+            async with self._redis.pipeline(transaction=False) as pipe:
+                for member in members:
+                    pipe.exists(presence_key(uuid.UUID(member)))
+                alive = await pipe.execute()
+        except RedisError:
+            logger.warning("Presence read failed for team %s", team_id, exc_info=True)
+            return []
+        return [uuid.UUID(m) for m, is_alive in zip(members, alive, strict=True) if is_alive]
+
+    async def _publish(
+        self, team_id: uuid.UUID, user_id: uuid.UUID, status: PresenceStatus
+    ) -> None:
+        frame = PresenceFrame(team_id=team_id, user_id=user_id, status=status)
+        await self._redis.publish(presence_channel(team_id), frame.model_dump_json())
