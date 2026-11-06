@@ -12,13 +12,16 @@ import pytest
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_core_client, get_gateway
+from app.api.deps import get_core_client, get_event_bus, get_gateway
 from app.api.routers import ws as ws_router
 from app.api.routers.ws import handle_message
+from app.clients.core import CoreClient
 from app.clients.presence import PresenceStore
 from app.core.exceptions import ServiceUnavailable
 from app.schemas.core import Memberships, TeamMembership, TeamRole
+from app.services.access_service import AccessService
 from app.services.connection_registry import ConnectionRegistry, SocketGroups
+from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
 from tests.fakes import FakeCore, FakePresence, FakeSocket, memberships
 
@@ -65,6 +68,7 @@ def gateway(app, registry, presence) -> Gateway:
     # run() never starts either, so the gateway never touches Redis.
     gateway = Gateway(MagicMock(), registry, cast(PresenceStore, presence))
     app.dependency_overrides[get_gateway] = lambda: gateway
+    app.dependency_overrides[get_event_bus] = lambda: MagicMock()  # no lifespan, so no Redis
     return gateway
 
 
@@ -258,7 +262,9 @@ def fake_socket() -> SimpleNamespace:
 
 async def handle(socket: object, raw: str, gateway: Gateway, user: Memberships) -> bool:
     """handle_message with a fake socket, which only duck-types a WebSocket."""
-    return await handle_message(cast(WebSocket, socket), raw, gateway, user)
+    access = AccessService(cast(CoreClient, FakeCore()))
+    bus = cast(EventBus, MagicMock())
+    return await handle_message(cast(WebSocket, socket), raw, gateway, access, bus, user)
 
 
 def watcher_of(*public_channel_ids: uuid.UUID) -> Memberships:

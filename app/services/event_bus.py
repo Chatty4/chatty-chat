@@ -6,6 +6,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.schemas.events import ChannelEvent
+from app.schemas.ws import TypingFrame
 
 logger = logging.getLogger(__name__)
 
@@ -59,3 +60,11 @@ class EventBus:
             await self._redis.publish(user_channel_name(user_id), message.model_dump_json())
         except RedisError:
             logger.exception("Failed to publish a live message to user %s", user_id)
+
+    async def send_typing(self, channel_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """Tell the channel someone is typing, on every gateway. If Redis is down, move on."""
+        frame = TypingFrame(channel_id=channel_id, user_id=user_id)
+        try:
+            await self._redis.publish(typing_channel(channel_id), frame.model_dump_json())
+        except RedisError:
+            logger.warning("Failed to publish typing for channel %s", channel_id, exc_info=True)
