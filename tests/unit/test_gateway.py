@@ -14,6 +14,7 @@ from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.schemas.events import ChannelEvent
 from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
+from app.services.event_bus import user_channel_name
 from app.services.gateway import Gateway
 from tests.fakes import FakePresence, FakeSocket, memberships
 
@@ -821,3 +822,102 @@ async def test_run_subscribes_to_the_teams_of_open_sockets(registry):
     await stop(task)
 
     assert presence_channel(team_id) in pubsub.channels
+
+
+# live messages for one user (chat.users:{user_id}, D-12)
+
+
+def unread_frame(channel_id: uuid.UUID) -> dict:
+    return {"type": "unread", "channel_id": str(channel_id), "unread": 0, "mentions": 0}
+
+
+async def test_a_user_message_reaches_every_socket_of_that_user_only(gateway):
+    me, someone_else = uuid.uuid4(), uuid.uuid4()
+    laptop, phone, theirs = FakeSocket(), FakeSocket(), FakeSocket()
+    await gateway.connect(me, laptop, [])
+    await gateway.connect(me, phone, [])
+    await gateway.connect(someone_else, theirs, [])
+    frame = unread_frame(uuid.uuid4())
+
+    await gateway.handle_user_message(user_channel_name(me), json.dumps(frame))
+
+    assert laptop.frames == [frame]
+    assert phone.frames == [frame]
+    assert theirs.frames == []
+
+
+@pytest.mark.parametrize(
+    ("redis_channel", "raw"),
+    [("chat.users:not-a-uuid", "{}"), (user_channel_name(uuid.uuid4()), "{not json")],
+    ids=["bad user id", "bad json"],
+)
+async def test_malformed_user_message_is_ignored(gateway, redis_channel, raw, caplog):
+    await gateway.handle_user_message(redis_channel, raw)
+
+    assert "malformed user message" in caplog.text
+
+
+class RecordingPubSub(ScriptedPubSub):
+    """Also records unsubscribes."""
+
+    def __init__(self, *messages: dict) -> None:
+        super().__init__(*messages)
+        self.left: list[str] = []
+
+    async def unsubscribe(self, *channels: str) -> None:
+        self.left.extend(channels)
+
+
+async def test_the_user_channel_is_joined_by_the_first_socket_and_left_by_the_last(registry):
+    user_id = uuid.uuid4()
+    pubsub = RecordingPubSub()
+    redis = MagicMock()
+    redis.pubsub.return_value = pubsub
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    first, second = FakeSocket(), FakeSocket()
+
+    await gateway.connect(user_id, first, [])
+    await gateway.connect(user_id, second, [])
+    joined = pubsub.channels.count(user_channel_name(user_id))
+    await gateway.disconnect(user_id, first)
+    left_after_first = list(pubsub.left)
+    await gateway.disconnect(user_id, second)
+    await stop(task)
+
+    assert joined == 1
+    assert left_after_first == []
+    assert pubsub.left == [user_channel_name(user_id)]
+
+
+async def test_run_subscribes_to_the_users_of_open_sockets(registry):
+    user_id = uuid.uuid4()
+    pubsub = ScriptedPubSub()
+    redis = MagicMock()
+    redis.pubsub.return_value = pubsub
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    await gateway.connect(user_id, FakeSocket(), [])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert user_channel_name(user_id) in pubsub.channels
+
+
+async def test_run_sends_user_messages_to_that_user(registry):
+    user_id = uuid.uuid4()
+    frame = unread_frame(uuid.uuid4())
+    message = {"type": "message", "channel": user_channel_name(user_id), "data": json.dumps(frame)}
+    redis = MagicMock()
+    redis.pubsub.return_value = ScriptedPubSub(message)
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    socket = FakeSocket()
+    await gateway.connect(user_id, socket, [])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert socket.frames == [frame]

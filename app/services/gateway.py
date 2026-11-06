@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Sequence
@@ -26,7 +27,7 @@ from app.schemas.core_events import (
 from app.schemas.events import ChannelEvent
 from app.schemas.presence import PresenceFrame
 from app.services.connection_registry import ConnectionRegistry
-from app.services.event_bus import channel_name
+from app.services.event_bus import USER_CHANNEL_PREFIX, channel_name, user_channel_name
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,8 @@ class Gateway:
         team_ids: Sequence[uuid.UUID] = (),
     ) -> None:
         """Adds the socket to its channels and teams. The user's first socket sends online."""
-        self._connections.add(user_id, socket)
+        if self._connections.add(user_id, socket):  # the user's first socket on this gateway
+            await self._subscribe_users([user_id])
         first = [cid for cid in channel_ids if self._connections.channels.join(socket, cid)]
         await self._subscribe(first)
         first_teams = [tid for tid in team_ids if self._connections.teams.join(socket, tid)]
@@ -86,7 +88,8 @@ class Gateway:
         """
         self._watching.pop(socket, None)
         self._stuck.discard(socket)
-        self._connections.remove(user_id, socket)
+        if self._connections.remove(user_id, socket):  # the user's last socket on this gateway
+            await self._unsubscribe_users([user_id])
         await self._unsubscribe(self._connections.channels.leave_all(socket))
         team_ids = self._connections.teams.of(socket)
         await self._unsubscribe_teams(self._connections.teams.leave_all(socket))
@@ -137,6 +140,7 @@ class Gateway:
                         await self._close_all(CloseCode.GOING_AWAY, "gateway_restart")
                     await self._subscribe(self._connections.channels.ids())
                     await self._subscribe_teams(self._connections.teams.ids())
+                    await self._subscribe_users(self._connections.user_ids())
                     backoff = 1
                     async for message in pubsub.listen():
                         if message["type"] != "message":
@@ -145,6 +149,8 @@ class Gateway:
                             await self.handle_core_event(message["data"])
                         elif message["channel"].startswith(PRESENCE_CHANNEL_PREFIX):
                             await self.handle_presence(message["data"])
+                        elif message["channel"].startswith(USER_CHANNEL_PREFIX):
+                            await self.handle_user_message(message["channel"], message["data"])
                         else:
                             await self.handle_channel_event(message["data"])
             except RedisError:
@@ -171,6 +177,16 @@ class Gateway:
             return
         sockets = self._connections.teams.members(frame.team_id) - self._stuck
         await self._send_all(sockets, frame.model_dump(mode="json"))
+
+    async def handle_user_message(self, redis_channel: str, raw: str) -> None:
+        """A live message for every socket of one user here, already in its WebSocket shape."""
+        try:
+            user_id = uuid.UUID(redis_channel.removeprefix(USER_CHANNEL_PREFIX))
+            frame = json.loads(raw)
+        except ValueError:  # a bad user ID or bad JSON (JSONDecodeError is a ValueError)
+            logger.warning("Ignoring malformed user message on %s: %.200s", redis_channel, raw)
+            return
+        await self._send_all(self._connections.sockets(user_id) - self._stuck, frame)
 
     async def handle_core_event(self, raw: str) -> None:
         try:
@@ -271,6 +287,12 @@ class Gateway:
 
     async def _unsubscribe_teams(self, team_ids: list[uuid.UUID]) -> None:
         await self._stop_listening(list(map(presence_channel, team_ids)))
+
+    async def _subscribe_users(self, user_ids: list[uuid.UUID]) -> None:
+        await self._listen(list(map(user_channel_name, user_ids)))
+
+    async def _unsubscribe_users(self, user_ids: list[uuid.UUID]) -> None:
+        await self._stop_listening(list(map(user_channel_name, user_ids)))
 
     async def _listen(self, names: list[str]) -> None:
         if not names or self._pubsub is None:

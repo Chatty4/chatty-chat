@@ -112,3 +112,24 @@ def test_channels_and_teams_are_separate(registry):
     assert registry.teams.join(socket, group_id) is True  # the first socket of the team
     assert registry.channels.leave_all(socket) == [group_id]
     assert registry.teams.members(group_id) == {socket}
+
+
+def test_add_and_remove_say_when_a_user_has_the_first_and_last_socket(registry):
+    user_id = uuid.uuid4()
+    first, second = object(), object()
+
+    assert registry.add(user_id, first) is True
+    assert registry.add(user_id, second) is False
+    assert registry.user_ids() == [user_id]
+    assert registry.remove(user_id, first) is False
+    assert registry.remove(user_id, second) is True
+    assert registry.user_ids() == []
+
+
+def test_removing_an_unknown_socket_is_not_the_last(registry):
+    user_id = uuid.uuid4()
+    registry.add(user_id, object())
+
+    assert registry.remove(user_id, object()) is False
+    assert registry.remove(uuid.uuid4(), object()) is False
+    assert registry.user_ids() == [user_id]

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, cast
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
@@ -16,6 +17,7 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
+from app.repositories.read_state import UnreadCounts
 from app.schemas.core import CoreChannel, Memberships, TeamMembership
 from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
@@ -23,6 +25,7 @@ from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
 from app.services.pin_service import PinService
 from app.services.reaction_service import ReactionService
+from app.services.read_state_service import ReadStateService
 from app.services.sync_service import SyncService
 
 
@@ -269,14 +272,28 @@ class FakeChannelEvents:
 
 
 class FakeReadState:
-    def __init__(self) -> None:
+    """
+    `positions` are the read positions by (user_id, channel_id). count_unread returns `counts`
+    per channel as (unread, mentions), or (0, 0); `counted` records each call.
+    """
+
+    def __init__(self, counts: dict[uuid.UUID, tuple[int, int]] | None = None) -> None:
         self.positions: dict[tuple[uuid.UUID, uuid.UUID], int] = {}
+        self.counts = counts or {}
+        self.counted: list[tuple[uuid.UUID, list[uuid.UUID]]] = []
 
     async def advance_read_position(
         self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
-    ) -> None:
+    ) -> int:
         key = (user_id, channel_id)
         self.positions[key] = max(self.positions.get(key, 0), seq)
+        return self.positions[key]
+
+    async def count_unread(
+        self, user_id: uuid.UUID, channel_ids: list[uuid.UUID]
+    ) -> list[UnreadCounts]:
+        self.counted.append((user_id, list(channel_ids)))
+        return [UnreadCounts(c, *self.counts.get(c, (0, 0))) for c in channel_ids]
 
 
 class FakeReactions:
@@ -378,15 +395,23 @@ class FakePins:
 
 
 class FakeBus:
-    """Records what was published, and writes "publish" to `log` to show when."""
+    """
+    Records what was published, and writes "publish" or "send_to_user" to `log` to show when.
+    `sent` are the live messages for users, as (user_id, the JSON the gateway forwards).
+    """
 
     def __init__(self, log: list[str] | None = None) -> None:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
+        self.sent: list[tuple[uuid.UUID, dict[str, Any]]] = []
 
     async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
         self.published.append((event.channel_id, event.model_dump(mode="json")))
+
+    async def send_to_user(self, user_id: uuid.UUID, message: BaseModel) -> None:
+        self._log.append("send_to_user")
+        self.sent.append((user_id, message.model_dump(mode="json")))
 
 
 class MessageFakes:
@@ -515,6 +540,28 @@ class FakePresence:
 
     async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
         return self.online.get(team_id, [])
+
+
+class ReadStateFakes:
+    """A ReadStateService on fakes. `log` shows the order of commit, rollback and send_to_user."""
+
+    def __init__(
+        self,
+        core: FakeCore,
+        last_seq: int = 0,
+        counts: dict[uuid.UUID, tuple[int, int]] | None = None,
+    ) -> None:
+        self.log: list[str] = []
+        self.read_state = FakeReadState(counts)
+        self.counters = FakeCounters(last_seq)
+        self.bus = FakeBus(self.log)
+        self.service = ReadStateService(
+            cast(AsyncSession, FakeSession(self.log)),
+            cast(ReadStateRepository, self.read_state),
+            cast(ChannelCounterRepository, self.counters),
+            AccessService(cast(CoreClient, core)),
+            cast(EventBus, self.bus),
+        )
 
 
 class FakeSocket:

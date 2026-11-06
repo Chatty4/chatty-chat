@@ -57,6 +57,15 @@ class AccessService:
         if not any(team.team_id == team_id for team in user.teams):
             raise PermissionDenied(ErrorCode.NOT_A_TEAM_MEMBER)
 
+    async def check_member(self, user: Memberships, channel_id: uuid.UUID) -> None:
+        if any(c.channel_id == channel_id for c in user.channels):
+            return
+        channel = await self._core.get_channel(channel_id)
+        if channel is None:
+            raise NotFound(ErrorCode.CHANNEL_NOT_FOUND)
+        if not _is_member(channel, user.user_id):
+            raise PermissionDenied(ErrorCode.NOT_A_MEMBER)
+
     async def get_writable_channel(self, user: Memberships, channel_id: uuid.UUID) -> CoreChannel:
         channel = await self._core.get_channel(channel_id)
         if channel is None:

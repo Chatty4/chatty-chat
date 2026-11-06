@@ -21,4 +21,13 @@ class Unwatch(BaseModel):
     channel_id: uuid.UUID
 
 
+class UnreadMessage(BaseModel):
+    """Sserver -> client: new counts of one channel (events.md, unread)"""
+
+    type: Literal["unread"] = "unread"
+    channel_id: uuid.UUID
+    unread: int
+    mentions: int
+
+
 ClientMessage = TypeAdapter(Annotated[Heartbeat | Watch | Unwatch, Field(discriminator="type")])

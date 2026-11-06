@@ -19,7 +19,7 @@ from app.main import create_app
 from app.models import ChannelCounter, Message, ReadState
 from app.models import ChannelEvent as ChannelEventRow
 from app.schemas.core import CoreChannel, Memberships
-from app.services.event_bus import channel_name
+from app.services.event_bus import channel_name, user_channel_name
 from tests.fakes import FakeCore, channel
 
 pytestmark = pytest.mark.integration
@@ -151,3 +151,32 @@ def test_channel_updated_reaches_sockets_on_both_gateways(start_gateway, room, r
         "archived": False,
     }
     assert frames == (expected, expected)
+
+
+def test_reading_on_one_gateway_sends_unread_to_my_socket_on_the_other(
+    start_gateway, room, redis, make_token
+):
+    gateway_1 = start_gateway(ANA, room)
+    gateway_2 = start_gateway(ANA, room)
+    ana_token = make_token(sub=str(ANA))
+
+    with gateway_1.websocket_connect(f"{WS_URL}?token={ana_token}") as ana_phone:
+        # Only gateway 1 has a socket of Ana, so the message can reach it only via Redis.
+        deadline = time.monotonic() + 5
+        while redis.pubsub_numsub(user_channel_name(ANA))[0][1] < 1:
+            assert time.monotonic() < deadline, "gateway 1 never subscribed to Ana's channel"
+            time.sleep(0.05)
+        response = gateway_2.post(
+            f"/api/chat/v1/channels/{room.channel_id}/read",
+            json={"seq": 0},
+            headers={"Authorization": f"Bearer {ana_token}"},
+        )
+        assert response.status_code == 200
+        frame = ana_phone.receive_json()
+
+    assert frame == {
+        "type": "unread",
+        "channel_id": str(room.channel_id),
+        "unread": 0,
+        "mentions": 0,
+    }
