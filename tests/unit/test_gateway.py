@@ -14,7 +14,7 @@ from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.schemas.events import ChannelEvent
 from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
-from app.services.event_bus import user_channel_name
+from app.services.event_bus import channel_name, typing_channel, user_channel_name
 from app.services.gateway import Gateway
 from tests.fakes import FakePresence, FakeSocket, memberships
 
@@ -921,3 +921,189 @@ async def test_run_sends_user_messages_to_that_user(registry):
     await stop(task)
 
     assert socket.frames == [frame]
+
+
+def typing_frame(channel_id: uuid.UUID, user_id: uuid.UUID) -> dict:
+    return {"type": "typing", "channel_id": str(channel_id), "user_id": str(user_id)}
+
+
+async def test_a_member_can_type(gateway):
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    assert gateway.can_type(socket, channel_id) is True
+
+
+async def test_a_socket_outside_the_channel_cant_type(gateway):
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [uuid.uuid4()])
+
+    assert gateway.can_type(socket, uuid.uuid4()) is False
+
+
+async def test_a_watcher_cant_type(gateway):
+    channel_id = uuid.uuid4()
+    user = viewer(channel_id)
+    socket = FakeSocket()
+    await gateway.connect(user.user_id, socket, [])
+    await gateway.watch(socket, user, channel_id)
+
+    assert gateway.can_type(socket, channel_id) is False
+
+
+async def test_someone_removed_from_the_channel_cant_type(gateway):
+    user_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(user_id, socket, [channel_id])
+
+    await gateway.handle_core_event(membership_changed(user_id, channel_id, "removed"))
+
+    assert gateway.can_type(socket, channel_id) is False
+
+
+async def test_typing_is_limited_to_once_every_3_seconds(gateway, monkeypatch):
+    monkeypatch.setattr(gateway_module, "TYPING_INTERVAL_SECONDS", 0.05)
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    assert gateway.can_type(socket, channel_id) is True
+    assert gateway.can_type(socket, channel_id) is False
+    await asyncio.sleep(0.06)
+    assert gateway.can_type(socket, channel_id) is True
+
+
+async def test_the_typing_limit_is_per_channel_and_per_socket(gateway):
+    user_id, first_channel, second_channel = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    first_tab, second_tab = FakeSocket(), FakeSocket()
+    await gateway.connect(user_id, first_tab, [first_channel, second_channel])
+    await gateway.connect(user_id, second_tab, [first_channel])
+    gateway.can_type(first_tab, first_channel)
+
+    assert gateway.can_type(first_tab, second_channel) is True
+    assert gateway.can_type(second_tab, first_channel) is True
+
+
+async def test_disconnect_forgets_the_typing_times(gateway):
+    user_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(user_id, socket, [channel_id])
+    gateway.can_type(socket, channel_id)
+
+    await gateway.disconnect(user_id, socket)
+
+    assert gateway._typing_at == {}
+
+
+async def test_typing_reaches_the_channel_and_its_watchers_but_not_other_channels(gateway):
+    channel_id, user_id = uuid.uuid4(), uuid.uuid4()
+    watcher = viewer(channel_id)
+    member, watching, outside = FakeSocket(), FakeSocket(), FakeSocket()
+    await gateway.connect(uuid.uuid4(), member, [channel_id])
+    await gateway.connect(watcher.user_id, watching, [])
+    await gateway.watch(watching, watcher, channel_id)
+    await gateway.connect(uuid.uuid4(), outside, [uuid.uuid4()])
+
+    await gateway.handle_typing(json.dumps(typing_frame(channel_id, user_id)))
+
+    assert member.frames == [typing_frame(channel_id, user_id)]
+    assert watching.frames == [typing_frame(channel_id, user_id)]
+    assert outside.frames == []
+
+
+async def test_typing_skips_all_the_typing_users_tabs(gateway):
+    channel_id, user_id = uuid.uuid4(), uuid.uuid4()
+    first_tab, second_tab = FakeSocket(), FakeSocket()
+    await gateway.connect(user_id, first_tab, [channel_id])
+    await gateway.connect(user_id, second_tab, [channel_id])
+
+    await gateway.handle_typing(json.dumps(typing_frame(channel_id, user_id)))
+
+    assert first_tab.frames == []
+    assert second_tab.frames == []
+
+
+async def test_typing_doesnt_wait_on_a_too_slow_socket(gateway, monkeypatch):
+    timeout = 0.2
+    monkeypatch.setattr(gateway_module, "SEND_TIMEOUT_SECONDS", timeout)
+    channel_id, new_channel, stuck_user = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    stuck, healthy = StuckSocket(), FakeSocket()
+    await gateway.connect(stuck_user, stuck, [channel_id])
+    await gateway.connect(uuid.uuid4(), healthy, [new_channel])
+    await gateway.handle_channel_event(channel_event(channel_id).model_dump_json())  # now too_slow
+    # membership.changed adds every socket of the user, the stuck one too
+    await gateway.handle_core_event(membership_changed(stuck_user, new_channel, "added"))
+
+    async with asyncio.timeout(timeout / 2):
+        await gateway.handle_typing(json.dumps(typing_frame(new_channel, uuid.uuid4())))
+
+    assert len(healthy.frames) == 1
+
+
+async def test_a_malformed_typing_frame_is_ignored(gateway):
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    await gateway.handle_typing('{"type": "typing", "channel_id": "nope"}')
+
+    assert socket.frames == []
+
+
+async def test_run_sends_typing_messages_to_the_channel(registry):
+    channel_id, user_id = uuid.uuid4(), uuid.uuid4()
+    message = {
+        "type": "message",
+        "channel": typing_channel(channel_id),
+        "data": json.dumps(typing_frame(channel_id, user_id)),
+    }
+    redis = MagicMock()
+    redis.pubsub.return_value = ScriptedPubSub(message)
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert socket.frames == [typing_frame(channel_id, user_id)]
+
+
+async def test_run_subscribes_to_typing_of_open_channels(registry):
+    channel_id = uuid.uuid4()
+    pubsub = ScriptedPubSub()
+    redis = MagicMock()
+    redis.pubsub.return_value = pubsub
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    await gateway.connect(uuid.uuid4(), FakeSocket(), [channel_id])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert typing_channel(channel_id) in pubsub.channels
+
+
+async def test_events_and_typing_are_joined_and_left_together(registry):
+    user_id, channel_id = uuid.uuid4(), uuid.uuid4()
+    pubsub = RecordingPubSub()
+    redis = MagicMock()
+    redis.pubsub.return_value = pubsub
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    first, second = FakeSocket(), FakeSocket()
+
+    await gateway.connect(user_id, first, [channel_id])
+    await gateway.connect(user_id, second, [channel_id])
+    joined = pubsub.channels.count(typing_channel(channel_id))
+    await gateway.disconnect(user_id, first)
+    left_after_first = list(pubsub.left)
+    await gateway.disconnect(user_id, second)
+    await stop(task)
+
+    assert joined == 1
+    assert typing_channel(channel_id) not in left_after_first
+    assert {channel_name(channel_id), typing_channel(channel_id)} <= set(pubsub.left)

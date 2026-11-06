@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
@@ -23,7 +23,7 @@ from app.services.access_service import AccessService
 from app.services.connection_registry import ConnectionRegistry, SocketGroups
 from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
-from tests.fakes import FakeCore, FakePresence, FakeSocket, memberships
+from tests.fakes import FakeCore, FakePresence, FakeSocket, channel, memberships
 
 USER_ID = uuid.uuid4()
 URL = "/api/chat/v1/ws"
@@ -63,12 +63,17 @@ def presence() -> FakePresence:
 
 
 @pytest.fixture
-def gateway(app, registry, presence) -> Gateway:
+def bus() -> AsyncMock:
+    return AsyncMock()
+
+
+@pytest.fixture
+def gateway(app, registry, presence, bus) -> Gateway:
     # Without it get_gateway reads app.state.gateway, which TestClient never sets (no lifespan).
     # run() never starts either, so the gateway never touches Redis.
     gateway = Gateway(MagicMock(), registry, cast(PresenceStore, presence))
     app.dependency_overrides[get_gateway] = lambda: gateway
-    app.dependency_overrides[get_event_bus] = lambda: MagicMock()  # no lifespan, so no Redis
+    app.dependency_overrides[get_event_bus] = lambda: bus  # no lifespan, so no Redis
     return gateway
 
 
@@ -260,11 +265,18 @@ def fake_socket() -> SimpleNamespace:
     return SimpleNamespace(state=SimpleNamespace())
 
 
-async def handle(socket: object, raw: str, gateway: Gateway, user: Memberships) -> bool:
+async def handle(
+    socket: object,
+    raw: str,
+    gateway: Gateway,
+    user: Memberships,
+    core: FakeCore | None = None,
+    bus: AsyncMock | None = None,
+) -> bool:
     """handle_message with a fake socket, which only duck-types a WebSocket."""
-    access = AccessService(cast(CoreClient, FakeCore()))
-    bus = cast(EventBus, MagicMock())
-    return await handle_message(cast(WebSocket, socket), raw, gateway, access, bus, user)
+    access = AccessService(cast(CoreClient, core or FakeCore()))
+    event_bus = cast(EventBus, bus or AsyncMock())
+    return await handle_message(cast(WebSocket, socket), raw, gateway, access, event_bus, user)
 
 
 def watcher_of(*public_channel_ids: uuid.UUID) -> Memberships:
@@ -409,3 +421,110 @@ def test_a_socket_goes_online_in_the_users_teams_and_offline_after(
         pass
 
     assert presence.sent == [("online", USER_ID, [team_id]), ("offline", USER_ID, [team_id])]
+
+
+def typing_message(channel_id: uuid.UUID) -> str:
+    return json.dumps({"type": "typing", "channel_id": str(channel_id)})
+
+
+async def test_typing_of_a_member_is_sent_with_the_id_from_the_socket(gateway, bus):
+    room = channel(USER_ID)
+    socket = FakeSocket()
+    await gateway.connect(USER_ID, socket, [room.channel_id])
+    # a user_id from the client must not win over the one from the token
+    raw = json.dumps(
+        {"type": "typing", "channel_id": str(room.channel_id), "user_id": str(uuid.uuid4())}
+    )
+
+    assert (
+        await handle(socket, raw, gateway, memberships(USER_ID), FakeCore(channel=room), bus=bus)
+        is False
+    )
+
+    bus.send_typing.assert_awaited_once_with(room.channel_id, USER_ID)
+    assert socket.frames == []
+
+
+@pytest.mark.parametrize(
+    "core",
+    [
+        FakeCore(channel=channel(USER_ID, archived=True)),
+        FakeCore(channel=channel(USER_ID, team_deleted=True)),
+        FakeCore(channel=channel(uuid.uuid4())),
+        FakeCore(),
+        FakeCore(error=ServiceUnavailable()),
+    ],
+    ids=["archived", "team deleted", "not a member any more", "no channel", "core down"],
+)
+async def test_typing_the_user_cant_write_is_ignored(gateway, bus, core):
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(USER_ID, socket, [channel_id])
+
+    await handle(socket, typing_message(channel_id), gateway, memberships(USER_ID), core, bus=bus)
+
+    bus.send_typing.assert_not_called()
+    assert socket.frames == []
+    assert socket.closed is None
+
+
+async def test_typing_too_soon_is_ignored_before_chatty_core_is_asked(gateway, bus):
+    room = channel(USER_ID)
+    socket = FakeSocket()
+    await gateway.connect(USER_ID, socket, [room.channel_id])
+    user, raw = memberships(USER_ID), typing_message(room.channel_id)
+    await handle(socket, raw, gateway, user, FakeCore(channel=room), bus=bus)
+
+    # handle_typing only catches AppError, so asking chatty-core now fails the test
+    await handle(socket, raw, gateway, user, FakeCore(error=AssertionError("asked core")), bus=bus)
+
+    bus.send_typing.assert_awaited_once()
+
+
+async def test_typing_in_a_random_channel_doesnt_reach_chatty_core(gateway, bus):
+    socket = FakeSocket()
+    await gateway.connect(USER_ID, socket, [])
+    core = FakeCore(error=AssertionError("asked core"))
+
+    await handle(socket, typing_message(uuid.uuid4()), gateway, memberships(USER_ID), core, bus=bus)
+
+    bus.send_typing.assert_not_called()
+
+
+async def test_a_bad_typing_message_is_ignored(gateway, bus):
+    socket = FakeSocket()
+    await gateway.connect(USER_ID, socket, [])
+    raw = '{"type": "typing", "channel_id": "nope"}'
+
+    assert await handle(socket, raw, gateway, memberships(USER_ID), bus=bus) is False
+
+    bus.send_typing.assert_not_called()
+
+
+def test_typing_on_a_real_socket_reaches_the_bus(app, ws_client, bus, make_token):
+    room = channel(USER_ID)
+    use_core(app, FakeCore(memberships=member_of(room.channel_id), channel=room))
+    token = make_token(sub=str(USER_ID))
+
+    with ws_client.websocket_connect(f"{URL}?token={token}") as ws:
+        ws.send_text(typing_message(room.channel_id))
+
+    bus.send_typing.assert_awaited_once_with(room.channel_id, USER_ID)
+
+
+def test_typing_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, monkeypatch):
+    monkeypatch.setattr(ws_router, "HEARTBEAT_TIMEOUT_SECONDS", 0.5)
+    room = channel(USER_ID)
+    use_core(app, FakeCore(memberships=member_of(room.channel_id), channel=room))
+    token = make_token(sub=str(USER_ID))
+
+    with (
+        ws_client.websocket_connect(f"{URL}?token={token}") as ws,
+        pytest.raises(WebSocketDisconnect) as closed,
+    ):
+        for _ in range(10):  # 1 s of typing, twice the timeout
+            ws.send_text(typing_message(room.channel_id))
+            time.sleep(0.1)
+        ws.receive_text()
+
+    assert closed.value.code == 4002
