@@ -26,12 +26,25 @@ from app.schemas.core_events import (
 )
 from app.schemas.events import ChannelEvent
 from app.schemas.presence import PresenceFrame
+from app.schemas.ws import TypingFrame
 from app.services.connection_registry import ConnectionRegistry
-from app.services.event_bus import USER_CHANNEL_PREFIX, channel_name, user_channel_name
+from app.services.event_bus import (
+    TYPING_CHANNEL_PREFIX,
+    USER_CHANNEL_PREFIX,
+    channel_name,
+    typing_channel,
+    user_channel_name,
+)
 
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_SECONDS = 5
+TYPING_INTERVAL_SECONDS = 3
+
+
+def _channel_names(channel_ids: list[uuid.UUID]) -> list[str]:
+    """Whoever gets a channel's events also gets its typing."""
+    return [name for cid in channel_ids for name in (channel_name(cid), typing_channel(cid))]
 
 
 class Socket(Protocol):
@@ -58,6 +71,8 @@ class Gateway:
         self._socket_ids: dict[Socket, str] = {}  # the socket's line in presence:{user_id}
         self._stuck: set[Socket] = set()  # closed as too_slow, waiting for their disconnect()
         self._closing: set[asyncio.Task] = set()  # keeps background closes from being collected
+        # when each socket last sent typing, per channel; only for the 3 s limit
+        self._typing_at: dict[Socket, dict[uuid.UUID, float]] = {}
 
     async def connect(
         self,
@@ -88,6 +103,7 @@ class Gateway:
         """
         self._watching.pop(socket, None)
         self._stuck.discard(socket)
+        self._typing_at.pop(socket, None)
         await self._unsubscribe_users(self._connections.users.leave_all(socket))
         await self._unsubscribe_channels(self._connections.channels.leave_all(socket))
         team_ids = self._connections.teams.of(socket)
@@ -95,6 +111,21 @@ class Gateway:
 
         if await self._presence.socket_closed(user_id, self._socket_ids.pop(socket)):
             await self._presence.go_offline(user_id, team_ids)
+
+    def can_type(self, socket: Socket, channel_id: uuid.UUID) -> bool:
+        """True for a member of the channel, at most once every 3 s per socket and channel."""
+        watched = self._watching.get(socket)
+        if watched is not None and watched.channel_id == channel_id:
+            return False  # a watcher is in the channel's sockets, but can't write
+        if socket not in self._connections.channels.members(channel_id):
+            return False
+
+        now = asyncio.get_running_loop().time()
+        times = self._typing_at.setdefault(socket, {})
+        if now - times.get(channel_id, -TYPING_INTERVAL_SECONDS) < TYPING_INTERVAL_SECONDS:
+            return False
+        times[channel_id] = now
+        return True
 
     async def watch(self, socket: Socket, user: Memberships, channel_id: uuid.UUID) -> bool:
         """False when the channel isn't public in one of the user's teams (cannot_watch)."""
@@ -148,6 +179,8 @@ class Gateway:
                             await self.handle_core_event(message["data"])
                         elif message["channel"].startswith(PRESENCE_CHANNEL_PREFIX):
                             await self.handle_presence(message["data"])
+                        elif message["channel"].startswith(TYPING_CHANNEL_PREFIX):
+                            await self.handle_typing(message["data"])
                         elif message["channel"].startswith(USER_CHANNEL_PREFIX):
                             await self.handle_user_message(message["channel"], message["data"])
                         else:
@@ -175,6 +208,19 @@ class Gateway:
             logger.warning("Ignoring malformed presence frame: %.200s", raw)
             return
         sockets = self._connections.teams.members(frame.team_id) - self._stuck
+        await self._send_all(sockets, frame.model_dump(mode="json"))
+
+    async def handle_typing(self, raw: str) -> None:
+        try:
+            frame = TypingFrame.model_validate_json(raw)
+        except ValidationError:
+            logger.warning("Ignoring malformed typing frame: %.200s", raw)
+            return
+        sockets = (
+            self._connections.channels.members(frame.channel_id)
+            - self._connections.users.members(frame.user_id)  # not the typing user's own tabs
+            - self._stuck
+        )
         await self._send_all(sockets, frame.model_dump(mode="json"))
 
     async def handle_user_message(self, redis_channel: str, raw: str) -> None:
@@ -276,10 +322,10 @@ class Gateway:
             logger.debug("Socket was already closed")
 
     async def _subscribe_channels(self, channel_ids: list[uuid.UUID]) -> None:
-        await self._listen(list(map(channel_name, channel_ids)))
+        await self._listen(_channel_names(channel_ids))
 
     async def _unsubscribe_channels(self, channel_ids: list[uuid.UUID]) -> None:
-        await self._stop_listening(list(map(channel_name, channel_ids)))
+        await self._stop_listening(_channel_names(channel_ids))
 
     async def _subscribe_teams(self, team_ids: list[uuid.UUID]) -> None:
         await self._listen(list(map(presence_channel, team_ids)))
