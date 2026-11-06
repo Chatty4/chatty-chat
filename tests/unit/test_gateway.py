@@ -111,7 +111,7 @@ async def test_after_disconnect_the_socket_gets_no_more_events(gateway, registry
     await gateway.handle_channel_event(channel_event(channel_id).model_dump_json())
 
     assert socket.frames == []
-    assert registry.sockets(user_id) == set()
+    assert registry.users.members(user_id) == set()
     assert registry.channels.members(channel_id) == set()
 
 
@@ -121,7 +121,7 @@ async def test_user_without_channels_joins_none(gateway, registry):
 
     await gateway.connect(user_id, socket, [])
 
-    assert registry.sockets(user_id) == {socket}
+    assert registry.users.members(user_id) == {socket}
     assert registry.channels.ids() == []
 
 

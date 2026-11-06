@@ -18,7 +18,7 @@ from app.api.routers.ws import handle_message
 from app.clients.presence import PresenceStore
 from app.core.exceptions import ServiceUnavailable
 from app.schemas.core import Memberships, TeamMembership, TeamRole
-from app.services.connection_registry import ConnectionRegistry
+from app.services.connection_registry import ConnectionRegistry, SocketGroups
 from app.services.gateway import Gateway
 from tests.fakes import FakeCore, FakePresence, FakeSocket, memberships
 
@@ -27,16 +27,26 @@ URL = "/api/chat/v1/ws"
 HEARTBEAT = {"type": "heartbeat", "visible": True}
 
 
+class RecordingGroups(SocketGroups):
+    """Sets joined once any socket joins."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.joined = threading.Event()
+
+    def join(self, socket, group_id) -> bool:
+        first = super().join(socket, group_id)
+        self.joined.set()
+        return first
+
+
 class RecordingRegistry(ConnectionRegistry):
     """Lets a test wait until the server has added the socket."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.added = threading.Event()
-
-    def add(self, user_id, socket) -> None:
-        super().add(user_id, socket)
-        self.added.set()
+        self.users = RecordingGroups()
+        self.added = self.users.joined
 
 
 @pytest.fixture
@@ -134,9 +144,9 @@ def test_socket_is_registered_while_open_and_removed_after(app, ws_client, regis
 
     with ws_client.websocket_connect(f"{URL}?token={token}"):
         assert registry.added.wait(timeout=2)
-        assert len(registry.sockets(USER_ID)) == 1
+        assert len(registry.users.members(USER_ID)) == 1
 
-    assert registry.sockets(USER_ID) == set()
+    assert registry.users.members(USER_ID) == set()
 
 
 def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_token):
@@ -153,12 +163,12 @@ def test_socket_joins_its_channels_and_leaves_them_after(app, ws_client, registr
 
     with ws_client.websocket_connect(f"{URL}?token={token}"):
         assert registry.added.wait(timeout=2)
-        # connect() runs add() before join(), so wait for the join too
+        # connect() joins the user before the channels, so wait for the channel join too
         for _ in range(20):
             if registry.channels.members(channel_id):
                 break
             time.sleep(0.05)
-        assert registry.channels.members(channel_id) == registry.sockets(USER_ID)
+        assert registry.channels.members(channel_id) == registry.users.members(USER_ID)
 
     assert registry.channels.members(channel_id) == set()
 
@@ -182,7 +192,7 @@ def test_heartbeats_keep_the_socket_open(app, ws_client, registry, make_token, m
             ws.send_json(HEARTBEAT)
             time.sleep(0.1)
         # the server removes the socket in its finally, so a closed socket would be gone
-        assert len(registry.sockets(USER_ID)) == 1
+        assert len(registry.users.members(USER_ID)) == 1
 
 
 def test_token_expiring_first_still_closes_with_4001(app, ws_client, make_token, monkeypatch):
