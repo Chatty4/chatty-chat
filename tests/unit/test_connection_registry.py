@@ -85,13 +85,13 @@ def test_in_channel_of_an_unknown_channel_is_empty(registry):
 def test_channels_and_users_are_tracked_separately(registry):
     user_id, channel_id = uuid.uuid4(), uuid.uuid4()
     socket = object()
-    registry.add(user_id, socket)
+    registry.users.join(socket, user_id)
     registry.channels.join(socket, channel_id)
 
-    registry.remove(user_id, socket)
+    registry.users.leave_all(socket)
 
-    # remove() is only the user index; the gateway calls leave_all() for the channels
-    assert registry.sockets(user_id) == set()
+    # users.leave_all() only touches users; the gateway calls channels.leave_all() too
+    assert registry.users.members(user_id) == set()
     assert registry.channels.members(channel_id) == {socket}
 
 
@@ -114,22 +114,31 @@ def test_channels_and_teams_are_separate(registry):
     assert registry.teams.members(group_id) == {socket}
 
 
-def test_add_and_remove_say_when_a_user_has_the_first_and_last_socket(registry):
+def test_users_join_and_leave_all_say_when_a_user_has_the_first_and_last_socket(registry):
     user_id = uuid.uuid4()
     first, second = object(), object()
 
-    assert registry.add(user_id, first) is True
-    assert registry.add(user_id, second) is False
-    assert registry.user_ids() == [user_id]
-    assert registry.remove(user_id, first) is False
-    assert registry.remove(user_id, second) is True
-    assert registry.user_ids() == []
+    assert registry.users.join(first, user_id) is True
+    assert registry.users.join(second, user_id) is False
+    assert registry.users.ids() == [user_id]
+    assert registry.users.leave_all(first) == []
+    assert registry.users.leave_all(second) == [user_id]
+    assert registry.users.ids() == []
 
 
-def test_removing_an_unknown_socket_is_not_the_last(registry):
+def test_leave_all_of_an_unknown_user_socket_is_not_the_last(registry):
     user_id = uuid.uuid4()
-    registry.add(user_id, object())
+    registry.users.join(object(), user_id)
 
-    assert registry.remove(user_id, object()) is False
-    assert registry.remove(uuid.uuid4(), object()) is False
-    assert registry.user_ids() == [user_id]
+    assert registry.users.leave_all(object()) == []
+    assert registry.users.ids() == [user_id]
+
+
+def test_all_sockets_lists_every_joined_socket_until_it_leaves_all(registry):
+    first, second = object(), object()
+    registry.users.join(first, uuid.uuid4())
+    registry.users.join(second, uuid.uuid4())
+
+    registry.users.leave_all(first)
+
+    assert registry.users.all_sockets() == [second]
