@@ -21,8 +21,21 @@ class Unwatch(BaseModel):
     channel_id: uuid.UUID
 
 
+class Typing(BaseModel):
+    type: Literal["typing"]
+    channel_id: uuid.UUID
+
+
+class TypingFrame(BaseModel):
+    """Server -> client: someone is typing (events.md, typing)."""
+
+    type: Literal["typing"] = "typing"
+    channel_id: uuid.UUID
+    user_id: uuid.UUID
+
+
 class UnreadMessage(BaseModel):
-    """Sserver -> client: new counts of one channel (events.md, unread)"""
+    """Server -> client: new counts of one channel (events.md, unread)"""
 
     type: Literal["unread"] = "unread"
     channel_id: uuid.UUID
@@ -30,4 +43,6 @@ class UnreadMessage(BaseModel):
     mentions: int
 
 
-ClientMessage = TypeAdapter(Annotated[Heartbeat | Watch | Unwatch, Field(discriminator="type")])
+ClientMessage = TypeAdapter(
+    Annotated[Heartbeat | Typing | Watch | Unwatch, Field(discriminator="type")]
+)

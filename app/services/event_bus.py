@@ -10,6 +10,7 @@ from app.schemas.events import ChannelEvent
 logger = logging.getLogger(__name__)
 
 USER_CHANNEL_PREFIX = "chat.users:"
+TYPING_CHANNEL_PREFIX = "chat.typing:"
 
 
 def channel_name(channel_id: uuid.UUID) -> str:
@@ -18,6 +19,11 @@ def channel_name(channel_id: uuid.UUID) -> str:
     its connected users are in, not the full event stream.
     """
     return f"chat.events:{channel_id}"
+
+
+def typing_channel(channel_id: uuid.UUID) -> str:
+    """Typing frames of one channel. Gateways listen to it together with channel_name."""
+    return f"{TYPING_CHANNEL_PREFIX}{channel_id}"
 
 
 def user_channel_name(user_id: uuid.UUID) -> str:
