@@ -18,11 +18,12 @@ from app.repositories import (
     ReadStateRepository,
 )
 from app.schemas.core import ChannelMembership, CoreChannel, Memberships, TeamMembership, TeamRole
-from app.schemas.messages import MessageResponse, SendMessageRequest
+from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessageRequest
 from app.schemas.read_state import ChannelUnread, MarkReadResponse
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
+from app.services.reaction_service import ReactionService
 from app.services.read_state_service import ReadStateService
 from tests.fakes import FakeBus, FakeCore, channel
 
@@ -239,3 +240,131 @@ async def test_a_message_after_my_own_is_unread(sessions, room):
     await send(sessions, room, BOB)
 
     assert await badge(sessions, room, ANA) == (1, 0)
+
+
+# Deleted messages
+
+
+async def delete_message(sessions, room: CoreChannel, user_id: uuid.UUID, message_id) -> None:
+    async with sessions() as session:
+        await messages(session, room).delete(member(user_id, room), message_id)
+
+
+async def test_deleting_an_unread_message_takes_it_off_the_count(sessions, room):
+    await send(sessions, room, ANA)
+    gone = await send(sessions, room, ANA)
+    assert await badge(sessions, room, BOB) == (2, 0)
+
+    await delete_message(sessions, room, ANA, gone.id)
+
+    assert await badge(sessions, room, BOB) == (1, 0)
+
+
+async def test_deleting_an_unread_mention_takes_it_off_both_counts(sessions, room):
+    gone = await send(sessions, room, ANA, f"<@{BOB}>")
+    assert await badge(sessions, room, BOB) == (1, 1)
+
+    await delete_message(sessions, room, ANA, gone.id)
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_deleting_a_read_message_changes_nothing(sessions, room):
+    gone = await send(sessions, room, ANA)
+    newest = await send(sessions, room, ANA)
+    await mark_read(sessions, room, BOB, gone.seq)
+    assert await badge(sessions, room, BOB) == (1, 0)
+
+    await delete_message(sessions, room, ANA, gone.id)
+
+    assert await badge(sessions, room, BOB) == (1, 0)
+    assert (await mark_read(sessions, room, BOB, newest.seq)).unread == 0
+
+
+async def test_deleting_takes_a_seq_but_doesnt_make_anything_unread(sessions, room):
+    gone = await send(sessions, room, ANA)
+    await mark_read(sessions, room, BOB, gone.seq)
+
+    await delete_message(sessions, room, ANA, gone.id)
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_a_message_after_a_delete_is_still_unread(sessions, room):
+    gone = await send(sessions, room, ANA)
+    await delete_message(sessions, room, ANA, gone.id)
+
+    await send(sessions, room, ANA)
+
+    assert await badge(sessions, room, BOB) == (1, 0)
+
+
+# Edits and reactions take a seq, but they aren't messages
+
+
+async def edit_message(sessions, room: CoreChannel, user_id: uuid.UUID, message_id, body) -> None:
+    async with sessions() as session:
+        await messages(session, room).edit(
+            member(user_id, room), message_id, EditMessageRequest(body=body)
+        )
+
+
+async def test_editing_a_read_message_doesnt_make_it_unread(sessions, room):
+    sent = await send(sessions, room, ANA)
+    await mark_read(sessions, room, BOB, sent.seq)
+
+    await edit_message(sessions, room, ANA, sent.id, "changed")
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_a_mention_added_to_an_unread_message_counts(sessions, room):
+    sent = await send(sessions, room, ANA)
+
+    await edit_message(sessions, room, ANA, sent.id, f"<@{BOB}>")
+
+    assert await badge(sessions, room, BOB) == (1, 1)
+
+
+async def test_a_mention_removed_from_an_unread_message_stops_counting(sessions, room):
+    sent = await send(sessions, room, ANA, f"<@{BOB}>")
+
+    await edit_message(sessions, room, ANA, sent.id, "never mind")
+
+    assert await badge(sessions, room, BOB) == (1, 0)
+
+
+async def test_a_mention_added_to_a_read_message_isnt_unread(sessions, room):
+    sent = await send(sessions, room, ANA)
+    await mark_read(sessions, room, BOB, sent.seq)
+
+    await edit_message(sessions, room, ANA, sent.id, f"<@{BOB}>")
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_a_reaction_is_not_unread(sessions, room):
+    sent = await send(sessions, room, ANA)
+    await mark_read(sessions, room, BOB, sent.seq)
+
+    async with sessions() as session:
+        await ReactionService(
+            session,
+            MessageRepository(session),
+            ReactionRepository(session),
+            ChannelCounterRepository(session),
+            ChannelEventRepository(session),
+            access(room),
+            cast(EventBus, FakeBus()),
+        ).add(member(ANA, room), sent.id, "👍")
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_reading_up_to_the_seq_of_an_edit_covers_the_messages_before_it(sessions, room):
+    sent = await send(sessions, room, ANA)
+    await edit_message(sessions, room, ANA, sent.id, "changed")  # takes seq 2
+
+    result = await mark_read(sessions, room, BOB, 2)
+
+    assert (result.last_read_seq, result.unread) == (2, 0)
