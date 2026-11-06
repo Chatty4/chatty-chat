@@ -5,12 +5,14 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
 from pydantic import ValidationError
 
-from app.api.deps import AccessServiceDep, GatewayDep
+from app.api.deps import AccessServiceDep, EventBusDep, GatewayDep
 from app.core.codes import CloseCode
-from app.core.exceptions import ServiceUnavailable, Unauthorized, UserInactive
+from app.core.exceptions import AppError, ServiceUnavailable, Unauthorized, UserInactive
 from app.core.security import decode_access_token
 from app.schemas.core import Memberships
-from app.schemas.ws import ClientMessage, Heartbeat, Unwatch, Watch
+from app.schemas.ws import ClientMessage, Heartbeat, Typing, Unwatch, Watch
+from app.services.access_service import AccessService
+from app.services.event_bus import EventBus
 from app.services.gateway import Gateway
 
 router = APIRouter()
@@ -18,8 +20,32 @@ router = APIRouter()
 HEARTBEAT_TIMEOUT_SECONDS = 60
 
 
+async def handle_typing(
+    websocket: WebSocket,
+    message: Typing,
+    gateway: Gateway,
+    access: AccessService,
+    bus: EventBus,
+    user: Memberships,
+) -> None:
+    """Refused typing is ignored without an error (events.md)."""
+    if not gateway.can_type(websocket, message.channel_id):
+        return
+    try:
+        # last: the checks above are free, and keep random channel IDs away from chatty-core
+        await access.get_writable_channel(user, message.channel_id)
+    except AppError:  # archived, no longer a member, or chatty-core is down
+        return
+    await bus.send_typing(message.channel_id, user.user_id)
+
+
 async def handle_message(
-    websocket: WebSocket, raw: str, gateway: Gateway, user: Memberships
+    websocket: WebSocket,
+    raw: str,
+    gateway: Gateway,
+    access: AccessService,
+    bus: EventBus,
+    user: Memberships,
 ) -> bool:
     """Returns True for a valid heartbeat, which also refreshes the user's presence."""
     try:
@@ -32,6 +58,8 @@ async def handle_message(
             websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
             await gateway.heartbeat(user.user_id, websocket)
             return True
+        case Typing():
+            await handle_typing(websocket, message, gateway, access, bus, user)
         case Watch():
             if not await gateway.watch(websocket, user, message.channel_id):
                 await websocket.send_json(
@@ -50,6 +78,7 @@ async def handle_message(
 async def websocket_endpoint(
     websocket: WebSocket,
     access: AccessServiceDep,
+    bus: EventBusDep,
     gateway: GatewayDep,
     token: str = "",
 ) -> None:
@@ -89,7 +118,7 @@ async def websocket_endpoint(
                 raw = message.get("text")
                 if raw is None:
                     continue  # a binary frame: ignored like any invalid message
-                if await handle_message(websocket, raw, gateway, user):
+                if await handle_message(websocket, raw, gateway, access, bus, user):
                     heartbeat_deadline = (
                         websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
                     )
