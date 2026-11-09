@@ -97,6 +97,7 @@ def to_message_response(
         channel_id=message.channel_id,
         seq=message.seq,
         author_id=message.author_id,
+        client_msg_id=message.client_msg_id,
         body=message.body,
         file_ids=[],
         attachments=[],
@@ -143,8 +144,8 @@ class MessageService:
         # archived since. It is the sender's own message, so nothing new is revealed.
         async with self._session.begin():  # ends the read, so the write can begin() its own
             existing = await self._messages.get_by_client_msg_id(user.user_id, data.client_msg_id)
-        if existing is not None:
-            return self._retry(existing, channel_id), False
+            if existing is not None:
+                return await self._retry(existing, user.user_id, channel_id), False
 
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
@@ -176,10 +177,13 @@ class MessageService:
 
         except MessageAlreadySent:
             # A concurrent request with this client_msg_id committed first; this one rolled back.
-            original = await self._messages.get_by_client_msg_id(user.user_id, data.client_msg_id)
-            if original is None:
-                raise  # another constraint failed, not a retry
-            return self._retry(original, channel_id), False
+            async with self._session.begin():
+                original = await self._messages.get_by_client_msg_id(
+                    user.user_id, data.client_msg_id
+                )
+                if original is None:
+                    raise  # another constraint failed, not a retry
+                return await self._retry(original, user.user_id, channel_id), False
 
         await self._bus.publish(
             ChannelEvent(
@@ -199,8 +203,10 @@ class MessageService:
         await self._access.check_can_read(user, channel_id)
 
         async with self._session.begin():
-            # last_seq first: a message saved between the two reads then comes in this page and
-            # again from /sync (dropped by seq), instead of being missed by both
+            # One snapshot for every read below. Under the default READ COMMITTED, a reaction
+            # saved after last_seq was read would be counted in this page and again by its event
+            # (seq > last_seq), which the web app then applies on top.
+            await self._session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
             last_seq = await self._counters.get_last_seq(channel_id)
 
@@ -221,14 +227,25 @@ class MessageService:
             last_seq=last_seq,
         )
 
-    def _retry(self, existing: Message, channel_id: uuid.UUID) -> MessageResponse:
-        """The saved message for a retry. Its client_msg_id in another channel is a client bug."""
+    async def _retry(
+        self, existing: Message, user_id: uuid.UUID, channel_id: uuid.UUID
+    ) -> MessageResponse:
+        """
+        The saved message for a retry, as it is now: others may have reacted or pinned it since.
+        Its client_msg_id in another channel is a client bug. Call inside a transaction.
+        """
         if existing.channel_id != channel_id:
             raise ValidationFailed(
                 message="client_msg_id was already used for a message in another channel",
                 fields={"client_msg_id": "already_used"},
             )
-        return to_message_response(existing)
+        return await self._full_response(existing, user_id)
+
+    async def _full_response(self, message: Message, user_id: uuid.UUID) -> MessageResponse:
+        """The message object with its reactions and pin. Call inside a transaction."""
+        reactions = await self._reactions.list_reactions([message.id], user_id)
+        pinned = await self._pins.pinned_message_ids([message.id])
+        return to_message_response(message, reactions.get(message.id), message.id in pinned)
 
     async def edit(
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
@@ -253,7 +270,9 @@ class MessageService:
             if updated is None:  # deleted after the check above
                 raise Conflict(ErrorCode.MESSAGE_DELETED, "The message was deleted")
 
-            response = to_message_response(updated)
+            # Inside the transaction: it holds the channel's counter lock, which every reaction
+            # and pin change also takes, so these are exactly as of this edit.
+            response = await self._full_response(updated, user.user_id)
             payload = {
                 "message_id": str(updated.id),
                 **response.model_dump(mode="json", include={"body", "mentions", "edited_at"}),

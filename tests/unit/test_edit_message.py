@@ -7,8 +7,16 @@ from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, ValidationFailed
 from app.models import Message
 from app.schemas.core import CoreChannel, TeamMembership, TeamRole
-from app.schemas.messages import EditMessageRequest
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from app.schemas.messages import EditMessageRequest, ReactionResponse
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    channel,
+    memberships,
+    saved_message,
+    saved_pin,
+)
 
 USER_ID, OTHER_ID, OUTSIDER_ID = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
@@ -56,6 +64,22 @@ async def test_author_edits_body_and_mentions():
     assert (event["type"], event["seq"], event["payload"]) == ("message.edited", 8, payload)
     assert event["created_at"] == payload["edited_at"]
     assert fakes.read_state.positions == {}  # editing doesn't move the read position
+
+
+async def test_edit_answer_has_the_reactions_and_pin_of_the_message():
+    room = channel(USER_ID, OTHER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message)
+    fakes.reactions.rows = [(message.id, OTHER_ID, "👍")]
+    fakes.pins.rows = {message.id: saved_pin(message, OTHER_ID)}
+
+    response = await fakes.service.edit(USER, message.id, EditMessageRequest(body="new"))
+
+    assert response.reactions == [ReactionResponse(emoji="👍", count=1, me=False)]
+    assert response.pinned is True
+    # the message.edited payload still has only the edited fields
+    [(_, _, _, payload)] = fakes.events.rows
+    assert set(payload) == {"message_id", "body", "mentions", "edited_at"}
 
 
 async def test_empty_body_is_refused_before_loading_the_message():

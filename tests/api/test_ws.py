@@ -158,6 +158,54 @@ def test_socket_is_registered_while_open_and_removed_after(app, ws_client, regis
     assert registry.users.members(USER_ID) == set()
 
 
+def connect_and_fail(client: TestClient, url: str) -> None:
+    """Connects to a server whose gateway.connect() raises; the error reaches the test client."""
+    with (
+        pytest.raises(RuntimeError, match="connect failed"),
+        client.websocket_connect(url) as ws,
+    ):
+        ws.receive_text()
+
+
+def test_a_connect_that_fails_halfway_still_removes_the_socket(
+    app, ws_client, gateway, registry, make_token, monkeypatch
+):
+    channel_id = uuid.uuid4()
+    use_core(app, FakeCore(memberships=member_of(channel_id)))
+    connect = gateway.connect
+
+    async def connect_then_fail(user_id, socket, channel_ids, team_ids):
+        await connect(user_id, socket, channel_ids, team_ids)
+        raise RuntimeError("connect failed")
+
+    monkeypatch.setattr(gateway, "connect", connect_then_fail)
+
+    connect_and_fail(ws_client, f"{URL}?token={make_token(sub=str(USER_ID))}")
+
+    assert registry.users.members(USER_ID) == set()
+    assert registry.channels.members(channel_id) == set()
+
+
+def test_a_connect_that_fails_before_the_presence_id_still_removes_the_socket(
+    app, ws_client, gateway, registry, presence, make_token, monkeypatch
+):
+    # Fails after joining the user and channels, before connect() gives the socket its
+    # presence id: disconnect() must clean up without a KeyError that hides this error.
+    channel_id = uuid.uuid4()
+    use_core(app, FakeCore(memberships=member_of(channel_id)))
+
+    async def subscribe_teams_fails(team_ids):
+        raise RuntimeError("connect failed")
+
+    monkeypatch.setattr(gateway, "_subscribe_teams", subscribe_teams_fails)
+
+    connect_and_fail(ws_client, f"{URL}?token={make_token(sub=str(USER_ID))}")
+
+    assert registry.users.members(USER_ID) == set()
+    assert registry.channels.members(channel_id) == set()
+    assert presence.sent == []  # it never went online, so no offline either
+
+
 def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_token):
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
     token = make_token(sub=str(USER_ID), exp=datetime.now(UTC) + timedelta(seconds=2))
@@ -360,12 +408,73 @@ async def test_watch_of_a_channel_not_public_in_the_users_teams_replies_cannot_w
 async def test_watch_of_a_public_channel_subscribes_without_a_reply(gateway, registry):
     socket = FakeSocket()
     channel_id = uuid.uuid4()
+    user = watcher_of(channel_id)
     raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
 
-    assert await handle(socket, raw, gateway, watcher_of(channel_id)) is False
+    assert await handle(socket, raw, gateway, user, FakeCore(memberships=user)) is False
 
     assert socket.frames == []
     assert registry.channels.members(channel_id) == {socket}
+
+
+async def test_watch_after_being_removed_from_the_team_replies_cannot_watch(gateway, registry):
+    # The memberships from connect still list the channel; the fresh ones don't.
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+    core = FakeCore(memberships=memberships(USER_ID))
+
+    await handle(socket, raw, gateway, watcher_of(channel_id), core)
+
+    assert socket.frames == [CANNOT_WATCH]
+    assert registry.channels.members(channel_id) == set()
+
+
+async def test_watch_in_a_team_joined_after_connect_subscribes(gateway, registry):
+    # The memberships from connect don't have the team yet; the fresh ones do.
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+    core = FakeCore(memberships=watcher_of(channel_id))
+
+    await handle(socket, raw, gateway, memberships(USER_ID), core)
+
+    assert socket.frames == []
+    assert registry.channels.members(channel_id) == {socket}
+
+
+async def test_watch_of_a_public_channel_newer_than_the_cache_subscribes(gateway, registry):
+    # Created after members:{user_id} was cached, so public_channel_ids doesn't list it yet.
+    new_public = channel(uuid.uuid4())
+    team = TeamMembership(team_id=new_public.team_id, role=TeamRole.MEMBER, public_channel_ids=[])
+    user = memberships(USER_ID, teams=[team])
+    socket = FakeSocket()
+    raw = json.dumps({"type": "watch", "channel_id": str(new_public.channel_id)})
+
+    await handle(socket, raw, gateway, user, FakeCore(memberships=user, channel=new_public))
+
+    assert socket.frames == []
+    assert registry.channels.members(new_public.channel_id) == {socket}
+
+
+@pytest.mark.parametrize(
+    "core",
+    [
+        FakeCore(error=ServiceUnavailable()),
+        FakeCore(memberships=memberships(USER_ID, is_active=False)),
+    ],
+    ids=["chatty-core down", "deactivated"],
+)
+async def test_watch_without_fresh_memberships_replies_cannot_watch(gateway, registry, core):
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+
+    await handle(socket, raw, gateway, watcher_of(channel_id), core)
+
+    assert socket.frames == [CANNOT_WATCH]
+    assert socket.closed is None  # stays open; user.deactivated makes the gateway close it
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_unwatch_ends_the_watch_without_a_reply(gateway, registry):

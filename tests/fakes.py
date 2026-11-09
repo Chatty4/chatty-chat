@@ -137,13 +137,16 @@ class _FakeTransaction:
 
 
 class FakeSession:
-    """Only `begin()`, which writes commit or rollback to `log`."""
+    """`begin()` writes commit or rollback to `log`; `connection()` does nothing."""
 
     def __init__(self, log: list[str]) -> None:
         self._log = log
 
     def begin(self) -> _FakeTransaction:
         return _FakeTransaction(self._log)
+
+    async def connection(self, execution_options: dict[str, Any] | None = None) -> None:
+        return None
 
 
 class FakeMessages:

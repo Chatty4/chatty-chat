@@ -104,6 +104,33 @@ async def test_deleted_message_keeps_its_place_and_last_seq_counts_the_delete(se
     assert page.last_seq == 3  # the delete took seq 3
 
 
+async def test_a_reaction_saved_during_the_read_is_left_for_its_event(sessions, room):
+    # The page and last_seq come from one snapshot: a reaction saved after last_seq was read
+    # must not be in the page, or the web app counts it again from its event (seq > last_seq).
+    message = await send(sessions, room, "hi")
+
+    async def react_meanwhile() -> None:
+        async with sessions.begin() as other:  # another request, committed mid-read
+            await ChannelCounterRepository(other).next_seq(room.channel_id)
+            await ReactionRepository(other).add_reaction(message.id, uuid.uuid4(), "👍")
+
+    async with sessions() as session:
+        history_service = service(session, room)
+        list_reactions = history_service._reactions.list_reactions
+
+        async def reacting_list_reactions(*args, **kwargs):
+            await react_meanwhile()
+            return await list_reactions(*args, **kwargs)
+
+        history_service._reactions.list_reactions = reacting_list_reactions  # type: ignore[method-assign]
+        page = await history_service.list_history(USER, room.channel_id, None, 50)
+
+    assert page.last_seq == 1
+    assert page.messages[0].reactions == []
+    # the reaction is there for the next read, with its seq after last_seq
+    assert (await history(sessions, room, None, 50)).messages[0].reactions[0].count == 1
+
+
 async def test_channel_without_messages_has_last_seq_0(sessions, room):
     page = await history(sessions, room, None, 50)
 

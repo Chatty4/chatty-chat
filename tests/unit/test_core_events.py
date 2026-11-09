@@ -111,7 +111,7 @@ USER_DEACTIVATED = ("user.deactivated", {"user_id": USER_ID})
         (*MEMBERSHIP_CHANGED, {members_key(USER_ID), channel_key(CHANNEL_ID)}),
         (*TEAM_MEMBER_CHANGED, {members_key(USER_ID)}),
         (*CHANNEL_UPDATED, {channel_key(CHANNEL_ID)}),
-        (*TEAM_DELETED, {channel_key(CHANNEL_ID), channel_key(OTHER_CHANNEL_ID)}),
+        (*TEAM_DELETED, CACHED),  # its channels and members are unknown, so every key goes
         (*USER_DEACTIVATED, {members_key(USER_ID)}),
     ],
 )

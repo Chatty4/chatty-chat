@@ -656,6 +656,19 @@ async def test_disconnect_leaves_the_teams(gateway, registry):
     assert registry.teams.members(team_id) == set()
 
 
+async def test_disconnect_of_a_socket_that_never_got_a_presence_id_sends_no_offline(
+    gateway, registry, presence
+):
+    # connect() failed after joining the user, before it gave the socket its presence id
+    user_id, socket = uuid.uuid4(), FakeSocket()
+    registry.users.join(socket, user_id)
+
+    await gateway.disconnect(user_id, socket)  # doesn't raise KeyError
+
+    assert registry.users.members(user_id) == set()
+    assert presence.sent == []
+
+
 async def test_heartbeat_refreshes_the_line_of_the_socket(gateway, presence):
     user_id = uuid.uuid4()
     socket = FakeSocket()

@@ -93,6 +93,7 @@ async def test_get_lists_pins_with_the_message_object(client, auth, message):
         "channel_id",
         "seq",
         "author_id",
+        "client_msg_id",
         "body",
         "file_ids",
         "attachments",

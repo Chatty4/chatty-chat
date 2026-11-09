@@ -61,7 +61,13 @@ async def handle_message(
         case Typing():
             await handle_typing(websocket, message, gateway, access, bus, user)
         case Watch():
-            if not await gateway.watch(websocket, user, message.channel_id):
+            try:
+                # Fresh, not the memberships from connect: the user may have joined or left a team,
+                # or the channel may be newer than the cache.
+                fresh = await access.get_user_for_watch(user.user_id, message.channel_id)
+            except AppError:  # chatty-core is down, or deactivated (the gateway closes the socket)
+                fresh = None
+            if fresh is None or not await gateway.watch(websocket, fresh, message.channel_id):
                 await websocket.send_json(
                     {
                         "type": "error",
@@ -101,36 +107,39 @@ async def websocket_endpoint(
     token_deadline = loop.time() + (claims.expires_at - time.time())
     heartbeat_deadline = loop.time() + HEARTBEAT_TIMEOUT_SECONDS
 
-    # shortcut: a channel removal that arrives while get_user() runs is missed, so this socket
-    # can still get that channel's new messages until it reconnects (at most 15 min); CHAT-271.
-    await gateway.connect(
-        user.user_id,
-        websocket,
-        [c.channel_id for c in user.channels],
-        [t.team_id for t in user.teams],
-    )
+    # The outer try: if connect() fails halfway, disconnect() still takes the socket out of
+    # what connect() already joined. The inner one only handles how the loop ends.
     try:
-        async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
-            while True:
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    raise WebSocketDisconnect(message.get("code", 1000))
-                raw = message.get("text")
-                if raw is None:
-                    continue  # a binary frame: ignored like any invalid message
-                if await handle_message(websocket, raw, gateway, access, bus, user):
-                    heartbeat_deadline = (
-                        websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
-                    )
-                    timeout.reschedule(min(token_deadline, heartbeat_deadline))
-    except TimeoutError:
-        if websocket.application_state == WebSocketState.DISCONNECTED:
-            pass  # the gateway closed it already (too_slow); a second close raises
-        elif token_deadline <= heartbeat_deadline:
-            await websocket.close(CloseCode.TOKEN_EXPIRED, "token_expired")
-        else:
-            await websocket.close(CloseCode.HEARTBEAT_TIMEOUT, "heartbeat_timeout")
-    except WebSocketDisconnect:
-        pass
+        # shortcut: a channel removal that arrives while get_user() runs is missed, so this socket
+        # can still get that channel's new messages until it reconnects (at most 15 min); CHAT-271.
+        await gateway.connect(
+            user.user_id,
+            websocket,
+            [c.channel_id for c in user.channels],
+            [t.team_id for t in user.teams],
+        )
+        try:
+            async with asyncio.timeout_at(min(token_deadline, heartbeat_deadline)) as timeout:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        raise WebSocketDisconnect(message.get("code", 1000))
+                    raw = message.get("text")
+                    if raw is None:
+                        continue  # a binary frame: ignored like any invalid message
+                    if await handle_message(websocket, raw, gateway, access, bus, user):
+                        heartbeat_deadline = (
+                            websocket.state.last_heartbeat_at + HEARTBEAT_TIMEOUT_SECONDS
+                        )
+                        timeout.reschedule(min(token_deadline, heartbeat_deadline))
+        except TimeoutError:
+            if websocket.application_state == WebSocketState.DISCONNECTED:
+                pass  # the gateway closed it already (too_slow); a second close raises
+            elif token_deadline <= heartbeat_deadline:
+                await websocket.close(CloseCode.TOKEN_EXPIRED, "token_expired")
+            else:
+                await websocket.close(CloseCode.HEARTBEAT_TIMEOUT, "heartbeat_timeout")
+        except WebSocketDisconnect:
+            pass
     finally:
         await gateway.disconnect(user.user_id, websocket)

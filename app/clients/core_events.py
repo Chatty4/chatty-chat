@@ -80,9 +80,10 @@ async def handle_event(redis: Redis, raw: str) -> None:
                 data = ChannelData.model_validate(event.data)
                 await mark_stale(redis, channel_key(data.channel_id))
             case CoreEventType.TEAM_DELETED:
-                # only team_id is sent, so the team's channels are unknown
+                # only team_id is sent, so the team's channels and members are unknown
                 await mark_all_stale(redis)
                 await delete_matching(redis, CHANNEL_KEYS)
+                await delete_matching(redis, MEMBERS_KEYS)
             case _:
                 logger.warning("Ignoring core event of unknown type %r", event.type)
     except ValidationError:

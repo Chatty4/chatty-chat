@@ -45,6 +45,7 @@ async def test_new_message_is_201_with_the_message_object(app, client, auth):
         "channel_id",
         "seq",
         "author_id",
+        "client_msg_id",
         "body",
         "file_ids",
         "attachments",
@@ -57,6 +58,7 @@ async def test_new_message_is_201_with_the_message_object(app, client, auth):
     }
     assert message["channel_id"] == str(room.channel_id)
     assert message["author_id"] == str(USER_ID)
+    assert message["client_msg_id"] == str(client_msg_id)
     assert (message["seq"], message["body"], message["mentions"]) == (1, body, [str(OTHER_ID)])
     assert (message["pinned"], message["edited_at"], message["deleted_at"]) == (False, None, None)
 
