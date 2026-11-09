@@ -128,9 +128,8 @@ class Gateway:
         return True
 
     async def watch(self, socket: Socket, user: Memberships, channel_id: uuid.UUID) -> bool:
-        """False when the channel isn't public in one of the user's teams (cannot_watch)."""
-        # shortcut: user is the memberships loaded at connect, so someone removed from a team
-        # can still start a watch on its channels until they reconnect; reload them if it matters.
+        """False when the channel isn't public in one of the user's teams (cannot_watch).
+        `user` must be fresh memberships, not the ones from connect (ws.py reloads them)."""
         team_id = next(
             (team.team_id for team in user.teams if channel_id in team.public_channel_ids), None
         )

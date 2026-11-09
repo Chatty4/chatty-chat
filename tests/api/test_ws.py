@@ -360,12 +360,59 @@ async def test_watch_of_a_channel_not_public_in_the_users_teams_replies_cannot_w
 async def test_watch_of_a_public_channel_subscribes_without_a_reply(gateway, registry):
     socket = FakeSocket()
     channel_id = uuid.uuid4()
+    user = watcher_of(channel_id)
     raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
 
-    assert await handle(socket, raw, gateway, watcher_of(channel_id)) is False
+    assert await handle(socket, raw, gateway, user, FakeCore(memberships=user)) is False
 
     assert socket.frames == []
     assert registry.channels.members(channel_id) == {socket}
+
+
+async def test_watch_after_being_removed_from_the_team_replies_cannot_watch(gateway, registry):
+    # The memberships from connect still list the channel; the fresh ones don't.
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+    core = FakeCore(memberships=memberships(USER_ID))
+
+    await handle(socket, raw, gateway, watcher_of(channel_id), core)
+
+    assert socket.frames == [CANNOT_WATCH]
+    assert registry.channels.members(channel_id) == set()
+
+
+async def test_watch_in_a_team_joined_after_connect_subscribes(gateway, registry):
+    # The memberships from connect don't have the team yet; the fresh ones do.
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+    core = FakeCore(memberships=watcher_of(channel_id))
+
+    await handle(socket, raw, gateway, memberships(USER_ID), core)
+
+    assert socket.frames == []
+    assert registry.channels.members(channel_id) == {socket}
+
+
+@pytest.mark.parametrize(
+    "core",
+    [
+        FakeCore(error=ServiceUnavailable()),
+        FakeCore(memberships=memberships(USER_ID, is_active=False)),
+    ],
+    ids=["chatty-core down", "deactivated"],
+)
+async def test_watch_without_fresh_memberships_replies_cannot_watch(gateway, registry, core):
+    socket = FakeSocket()
+    channel_id = uuid.uuid4()
+    raw = json.dumps({"type": "watch", "channel_id": str(channel_id)})
+
+    await handle(socket, raw, gateway, watcher_of(channel_id), core)
+
+    assert socket.frames == [CANNOT_WATCH]
+    assert socket.closed is None  # stays open; user.deactivated makes the gateway close it
+    assert registry.channels.members(channel_id) == set()
 
 
 async def test_unwatch_ends_the_watch_without_a_reply(gateway, registry):

@@ -61,7 +61,12 @@ async def handle_message(
         case Typing():
             await handle_typing(websocket, message, gateway, access, bus, user)
         case Watch():
-            if not await gateway.watch(websocket, user, message.channel_id):
+            try:
+                # Fresh, not the memberships from connect: the user may have joined or left a team.
+                fresh = await access.get_user(user.user_id)
+            except AppError:  # chatty-core is down, or deactivated (the gateway closes the socket)
+                fresh = None
+            if fresh is None or not await gateway.watch(websocket, fresh, message.channel_id):
                 await websocket.send_json(
                     {
                         "type": "error",
