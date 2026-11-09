@@ -158,6 +158,54 @@ def test_socket_is_registered_while_open_and_removed_after(app, ws_client, regis
     assert registry.users.members(USER_ID) == set()
 
 
+def connect_and_fail(client: TestClient, url: str) -> None:
+    """Connects to a server whose gateway.connect() raises; the error reaches the test client."""
+    with (
+        pytest.raises(RuntimeError, match="connect failed"),
+        client.websocket_connect(url) as ws,
+    ):
+        ws.receive_text()
+
+
+def test_a_connect_that_fails_halfway_still_removes_the_socket(
+    app, ws_client, gateway, registry, make_token, monkeypatch
+):
+    channel_id = uuid.uuid4()
+    use_core(app, FakeCore(memberships=member_of(channel_id)))
+    connect = gateway.connect
+
+    async def connect_then_fail(user_id, socket, channel_ids, team_ids):
+        await connect(user_id, socket, channel_ids, team_ids)
+        raise RuntimeError("connect failed")
+
+    monkeypatch.setattr(gateway, "connect", connect_then_fail)
+
+    connect_and_fail(ws_client, f"{URL}?token={make_token(sub=str(USER_ID))}")
+
+    assert registry.users.members(USER_ID) == set()
+    assert registry.channels.members(channel_id) == set()
+
+
+def test_a_connect_that_fails_before_the_presence_id_still_removes_the_socket(
+    app, ws_client, gateway, registry, presence, make_token, monkeypatch
+):
+    # Fails after joining the user and channels, before connect() gives the socket its
+    # presence id: disconnect() must clean up without a KeyError that hides this error.
+    channel_id = uuid.uuid4()
+    use_core(app, FakeCore(memberships=member_of(channel_id)))
+
+    async def subscribe_teams_fails(team_ids):
+        raise RuntimeError("connect failed")
+
+    monkeypatch.setattr(gateway, "_subscribe_teams", subscribe_teams_fails)
+
+    connect_and_fail(ws_client, f"{URL}?token={make_token(sub=str(USER_ID))}")
+
+    assert registry.users.members(USER_ID) == set()
+    assert registry.channels.members(channel_id) == set()
+    assert presence.sent == []  # it never went online, so no offline either
+
+
 def test_socket_closes_with_4001_when_the_token_expires(app, ws_client, make_token):
     use_core(app, FakeCore(memberships=memberships(USER_ID)))
     token = make_token(sub=str(USER_ID), exp=datetime.now(UTC) + timedelta(seconds=2))

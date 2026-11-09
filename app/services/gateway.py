@@ -99,7 +99,7 @@ class Gateway:
     async def disconnect(self, user_id: uuid.UUID, socket: Socket) -> None:
         """
         Removes the socket from its channels and teams. The user's last socket, on any gateway,
-        sends offline.
+        sends offline. Safe for a socket whose connect() failed halfway.
         """
         self._watching.pop(socket, None)
         self._stuck.discard(socket)
@@ -109,7 +109,10 @@ class Gateway:
         team_ids = self._connections.teams.of(socket)
         await self._unsubscribe_teams(self._connections.teams.leave_all(socket))
 
-        if await self._presence.socket_closed(user_id, self._socket_ids.pop(socket)):
+        socket_id = self._socket_ids.pop(socket, None)
+        if socket_id is None:
+            return  # connect() failed before it gave the socket a presence id: nothing to close
+        if await self._presence.socket_closed(user_id, socket_id):
             await self._presence.go_offline(user_id, team_ids)
 
     def can_type(self, socket: Socket, channel_id: uuid.UUID) -> bool:
