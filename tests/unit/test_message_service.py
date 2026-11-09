@@ -4,8 +4,16 @@ import pytest
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, MessageAlreadySent, ValidationFailed
-from app.schemas.messages import SendMessageRequest
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from app.schemas.messages import ReactionResponse, SendMessageRequest
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    channel,
+    memberships,
+    saved_message,
+    saved_pin,
+)
 
 USER_ID, OTHER_ID, OUTSIDER_ID = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
@@ -65,9 +73,37 @@ async def test_retry_that_loses_the_race_returns_the_winner():
 
     assert not created
     assert message.id == winner.id
-    assert fakes.log == ["commit", "rollback"]
+    # the retry lookup, the write that lost, then the read of the winner with its reactions
+    assert fakes.log == ["commit", "rollback", "commit"]
     assert fakes.events.rows == []
     assert fakes.bus.published == []
+
+
+async def test_retry_returns_the_reactions_and_pin_the_message_has_now():
+    room = channel(USER_ID)
+    data = request()
+    original = saved_message(room.channel_id, USER_ID, data.client_msg_id, seq=3)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(existing=original))
+    fakes.reactions.rows = [(original.id, OTHER_ID, "👍"), (original.id, USER_ID, "👍")]
+    fakes.pins.rows = {original.id: saved_pin(original, OTHER_ID)}
+
+    message, _ = await fakes.service.send(USER, room.channel_id, data)
+
+    assert message.reactions == [ReactionResponse(emoji="👍", count=2, me=True)]
+    assert message.pinned is True
+
+
+async def test_retry_that_loses_the_race_returns_the_winners_reactions():
+    room = channel(USER_ID)
+    data = request()
+    winner = saved_message(room.channel_id, USER_ID, data.client_msg_id)
+    messages = FakeMessages(insert_error=MessageAlreadySent(), saved_meanwhile=winner)
+    fakes = MessageFakes(FakeCore(channel=room), messages)
+    fakes.reactions.rows = [(winner.id, OTHER_ID, "🎉")]
+
+    message, _ = await fakes.service.send(USER, room.channel_id, data)
+
+    assert message.reactions == [ReactionResponse(emoji="🎉", count=1, me=False)]
 
 
 @pytest.mark.parametrize("flags", [{"archived": True}, {"team_deleted": True}])
@@ -119,7 +155,8 @@ async def test_unique_violation_without_an_original_is_raised():
     with pytest.raises(MessageAlreadySent):
         await fakes.service.send(USER, room.channel_id, request())
 
-    assert fakes.log == ["commit", "rollback"]
+    # the retry lookup, the write that failed, then the read that found no original
+    assert fakes.log == ["commit", "rollback", "rollback"]
     assert fakes.bus.published == []
 
 
