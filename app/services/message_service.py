@@ -199,8 +199,10 @@ class MessageService:
         await self._access.check_can_read(user, channel_id)
 
         async with self._session.begin():
-            # last_seq first: a message saved between the two reads then comes in this page and
-            # again from /sync (dropped by seq), instead of being missed by both
+            # One snapshot for every read below. Under the default READ COMMITTED, a reaction
+            # saved after last_seq was read would be counted in this page and again by its event
+            # (seq > last_seq), which the web app then applies on top.
+            await self._session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
             last_seq = await self._counters.get_last_seq(channel_id)
 
