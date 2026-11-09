@@ -395,6 +395,20 @@ async def test_watch_in_a_team_joined_after_connect_subscribes(gateway, registry
     assert registry.channels.members(channel_id) == {socket}
 
 
+async def test_watch_of_a_public_channel_newer_than_the_cache_subscribes(gateway, registry):
+    # Created after members:{user_id} was cached, so public_channel_ids doesn't list it yet.
+    new_public = channel(uuid.uuid4())
+    team = TeamMembership(team_id=new_public.team_id, role=TeamRole.MEMBER, public_channel_ids=[])
+    user = memberships(USER_ID, teams=[team])
+    socket = FakeSocket()
+    raw = json.dumps({"type": "watch", "channel_id": str(new_public.channel_id)})
+
+    await handle(socket, raw, gateway, user, FakeCore(memberships=user, channel=new_public))
+
+    assert socket.frames == []
+    assert registry.channels.members(new_public.channel_id) == {socket}
+
+
 @pytest.mark.parametrize(
     "core",
     [

@@ -98,6 +98,65 @@ async def test_public_channel_of_another_team_is_403():
     assert (error.value.status_code, error.value.code) == (403, ErrorCode.CANNOT_READ_CHANNEL)
 
 
+async def test_watch_memberships_list_a_public_channel_newer_than_the_cache():
+    new_public = channel(uuid.uuid4())
+    cached = memberships(USER_ID, teams=[team_of(new_public)])
+    access = AccessService(FakeCore(memberships=cached, channel=new_public))
+
+    user = await access.get_user_for_watch(USER_ID, new_public.channel_id)
+
+    assert user.teams[0].public_channel_ids == [new_public.channel_id]
+    assert cached.teams[0].public_channel_ids == []  # the cached answer isn't changed
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param({"kind": "private"}, id="private channel of my team"),
+        pytest.param({"team_deleted": True}, id="public channel of a deleted team"),
+    ],
+)
+async def test_watch_memberships_dont_list_a_channel_the_user_cant_watch(flags):
+    other = channel(uuid.uuid4(), **flags)
+    cached = memberships(USER_ID, teams=[team_of(other)])
+    access = AccessService(FakeCore(memberships=cached, channel=other))
+
+    user = await access.get_user_for_watch(USER_ID, other.channel_id)
+
+    assert user.teams[0].public_channel_ids == []
+
+
+async def test_watch_memberships_dont_list_a_public_channel_of_another_team():
+    elsewhere = channel(uuid.uuid4())
+    my_team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+    access = AccessService(
+        FakeCore(memberships=memberships(USER_ID, teams=[my_team]), channel=elsewhere)
+    )
+
+    user = await access.get_user_for_watch(USER_ID, elsewhere.channel_id)
+
+    assert user.teams[0].public_channel_ids == []
+
+
+class NoChannelLookups(FakeCore):
+    async def get_channel(self, channel_id: uuid.UUID) -> CoreChannel | None:
+        raise AssertionError("asked chatty-core for the channel")
+
+
+async def test_watch_of_a_listed_channel_doesnt_ask_chatty_core_for_it():
+    channel_id = uuid.uuid4()
+    team = TeamMembership(
+        team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[channel_id]
+    )
+    cached = memberships(USER_ID, teams=[team])
+
+    user = await AccessService(NoChannelLookups(memberships=cached)).get_user_for_watch(
+        USER_ID, channel_id
+    )
+
+    assert user == cached
+
+
 async def test_unknown_channel_is_404():
     with pytest.raises(AppError) as error:
         await AccessService(FakeCore()).check_can_read(memberships(USER_ID), uuid.uuid4())

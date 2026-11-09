@@ -62,8 +62,9 @@ async def handle_message(
             await handle_typing(websocket, message, gateway, access, bus, user)
         case Watch():
             try:
-                # Fresh, not the memberships from connect: the user may have joined or left a team.
-                fresh = await access.get_user(user.user_id)
+                # Fresh, not the memberships from connect: the user may have joined or left a team,
+                # or the channel may be newer than the cache.
+                fresh = await access.get_user_for_watch(user.user_id, message.channel_id)
             except AppError:  # chatty-core is down, or deactivated (the gateway closes the socket)
                 fresh = None
             if fresh is None or not await gateway.watch(websocket, fresh, message.channel_id):

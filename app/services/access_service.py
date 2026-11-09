@@ -56,6 +56,26 @@ class AccessService:
             raise UserInactive()
         return memberships
 
+    async def get_user_for_watch(self, user_id: uuid.UUID, channel_id: uuid.UUID) -> Memberships:
+        """
+        Fresh memberships for a watch. A public channel of the user's team that is newer than the
+        cached public_channel_ids is looked up in chatty-core and added to its team's list, as the
+        memberships answer will list it once the cache refreshes.
+        """
+        user = await self.get_user(user_id)
+        if any(channel_id in team.public_channel_ids for team in user.teams):
+            return user
+        channel = await self._core.get_channel(channel_id)
+        if channel is None or channel.kind != ChannelKind.PUBLIC or not _can_read(user, channel):
+            return user  # the gateway answers cannot_watch
+        teams = [
+            team.model_copy(update={"public_channel_ids": [*team.public_channel_ids, channel_id]})
+            if team.team_id == channel.team_id
+            else team
+            for team in user.teams
+        ]
+        return user.model_copy(update={"teams": teams})
+
     async def check_can_read(self, user: Memberships, channel_id: uuid.UUID) -> None:
         if any(c.channel_id == channel_id for c in user.channels):
             return
