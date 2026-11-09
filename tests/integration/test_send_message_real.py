@@ -105,6 +105,8 @@ async def test_messages_take_the_next_seq_and_are_stored(sessions, room):
         (2, "message.created"),
     ]
     assert events[0].payload["message"]["id"] == str(first.id)
+    # the author's app replaces its pending copy with it when the event beats the POST response
+    assert events[0].payload["message"]["client_msg_id"] == str(first.client_msg_id)
     assert (last_seq, last_read) == (2, 2)
     assert [event["seq"] for _, event in bus.published] == [1, 2]
 

@@ -97,6 +97,7 @@ def to_message_response(
         channel_id=message.channel_id,
         seq=message.seq,
         author_id=message.author_id,
+        client_msg_id=message.client_msg_id,
         body=message.body,
         file_ids=[],
         attachments=[],

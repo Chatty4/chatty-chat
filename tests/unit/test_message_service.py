@@ -20,11 +20,14 @@ async def test_new_message_is_saved_then_published():
     fakes = MessageFakes(FakeCore(channel=room))
     fakes.counters.last_seq = 7
     body = f"deploy? <@{OTHER_ID}> <@{OUTSIDER_ID}>"
+    data = request(body)
 
-    message, created = await fakes.service.send(USER, room.channel_id, request(body))
+    message, created = await fakes.service.send(USER, room.channel_id, data)
 
     assert created
     assert (message.seq, message.author_id, message.body) == (8, USER_ID, body)
+    # in the response and, through payload below, in the event: the author's app matches on it
+    assert message.client_msg_id == data.client_msg_id
     assert message.mentions == [OTHER_ID]  # the outsider stays in the text only
     assert (message.file_ids, message.attachments, message.reactions) == ([], [], [])
     payload = {"message": message.model_dump(mode="json")}

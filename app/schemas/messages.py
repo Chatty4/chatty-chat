@@ -52,6 +52,8 @@ class MessageResponse(BaseModel):
     channel_id: uuid.UUID
     seq: int
     author_id: uuid.UUID
+    # the author's app replaces its pending copy with it, whichever of POST and event comes first
+    client_msg_id: uuid.UUID
     body: str
     file_ids: list[uuid.UUID]
     attachments: list[AttachmentResponse]
