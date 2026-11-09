@@ -4,7 +4,7 @@ import pytest
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError, Unauthorized, UserInactive
-from app.schemas.core import TeamMembership, TeamRole
+from app.schemas.core import CoreChannel, TeamMembership, TeamRole
 from app.services.access_service import AccessService
 from tests.fakes import FakeCore, channel, memberships
 
@@ -56,6 +56,45 @@ async def test_channel_of_other_people_is_403():
         await AccessService(FakeCore(channel=private)).check_can_read(
             memberships(USER_ID), private.channel_id
         )
+    assert (error.value.status_code, error.value.code) == (403, ErrorCode.CANNOT_READ_CHANNEL)
+
+
+def team_of(core_channel: CoreChannel) -> TeamMembership:
+    """A membership in the channel's team, from a cache that doesn't list the channel yet."""
+    return TeamMembership(team_id=core_channel.team_id, role=TeamRole.MEMBER, public_channel_ids=[])
+
+
+async def test_public_channel_newer_than_the_cache_is_readable():
+    new_public = channel(uuid.uuid4())  # created after members:{user_id} was cached
+    user = memberships(USER_ID, teams=[team_of(new_public)])
+
+    await AccessService(FakeCore(channel=new_public)).check_can_read(user, new_public.channel_id)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param({"kind": "private"}, id="private channel of my team"),
+        pytest.param({"kind": "dm"}, id="dm of my team"),
+        pytest.param({"team_deleted": True}, id="public channel of a deleted team"),
+    ],
+)
+async def test_fallback_still_refuses_non_members(flags):
+    other = channel(uuid.uuid4(), **flags)
+    user = memberships(USER_ID, teams=[team_of(other)])
+
+    with pytest.raises(AppError) as error:
+        await AccessService(FakeCore(channel=other)).check_can_read(user, other.channel_id)
+    assert (error.value.status_code, error.value.code) == (403, ErrorCode.CANNOT_READ_CHANNEL)
+
+
+async def test_public_channel_of_another_team_is_403():
+    elsewhere = channel(uuid.uuid4())
+    my_team = TeamMembership(team_id=uuid.uuid4(), role=TeamRole.MEMBER, public_channel_ids=[])
+    user = memberships(USER_ID, teams=[my_team])
+
+    with pytest.raises(AppError) as error:
+        await AccessService(FakeCore(channel=elsewhere)).check_can_read(user, elsewhere.channel_id)
     assert (error.value.status_code, error.value.code) == (403, ErrorCode.CANNOT_READ_CHANNEL)
 
 

@@ -10,6 +10,21 @@ def _is_member(channel: CoreChannel, user_id: uuid.UUID) -> bool:
     return any(member.user_id == user_id for member in channel.members)
 
 
+def _can_read(user: Memberships, channel: CoreChannel) -> bool:
+    """A channel member, or any team member for a public channel (api-chat.md).
+
+    The channel is a fresh answer from chatty-core. The user's teams come from the same
+    members cache as public_channel_ids, so this adds no new staleness.
+    """
+    if _is_member(channel, user.user_id):
+        return True  # members of a deleted team's channels can still read them
+    return (
+        channel.kind == ChannelKind.PUBLIC
+        and not channel.team_deleted
+        and any(team.team_id == channel.team_id for team in user.teams)
+    )
+
+
 def _can_delete_others(user: Memberships, channel: CoreChannel) -> bool:
     """D-05: the channel owner or a team owner/admin. Never in a DM."""
     if channel.kind == ChannelKind.DM:
@@ -46,11 +61,12 @@ class AccessService:
             return
         if any(channel_id in team.public_channel_ids for team in user.teams):
             return
+        # Not in the cached lists: the channel may be newer than them (a public channel created
+        # after the cache was filled), or of a deleted team, which memberships leave out.
         channel = await self._core.get_channel(channel_id)
         if channel is None:
             raise NotFound(ErrorCode.CHANNEL_NOT_FOUND)
-        # memberships leaves out deleted teams, but their members can still read
-        if not _is_member(channel, user.user_id):
+        if not _can_read(user, channel):
             raise PermissionDenied(ErrorCode.CANNOT_READ_CHANNEL)
 
     def check_in_team(self, user: Memberships, team_id: uuid.UUID) -> None:
