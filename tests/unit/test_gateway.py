@@ -669,15 +669,16 @@ async def test_disconnect_of_a_socket_that_never_got_a_presence_id_sends_no_offl
     assert presence.sent == []
 
 
-async def test_heartbeat_refreshes_the_line_of_the_socket(gateway, presence):
+@pytest.mark.parametrize("visible", [True, False])
+async def test_heartbeat_refreshes_the_line_of_the_socket(gateway, presence, visible):
     user_id = uuid.uuid4()
     socket = FakeSocket()
     await gateway.connect(user_id, socket, [])
 
-    await gateway.heartbeat(user_id, socket)
+    await gateway.heartbeat(user_id, socket, visible)
 
     [line] = presence.lines[user_id]
-    assert presence.heartbeats == [(user_id, line)]
+    assert presence.heartbeats == [(user_id, line, visible)]
     assert presence.sent == [("online", user_id, [])]  # only from the connect
 
 

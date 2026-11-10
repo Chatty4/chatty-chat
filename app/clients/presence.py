@@ -19,6 +19,11 @@ def presence_key(user_id: uuid.UUID) -> str:
     return f"presence:{user_id}"
 
 
+def visible_key(user_id: uuid.UUID) -> str:
+    """The user's sockets with a tab on screen, for the push worker (events.md, heartbeat)."""
+    return f"visible:{user_id}"
+
+
 def online_key(team_id: uuid.UUID) -> str:
     return f"online:{team_id}"
 
@@ -53,12 +58,24 @@ class PresenceStore:
             return False
         return lines_before == 0
 
-    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
-        key = presence_key(user_id)
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str, visible: bool) -> None:
+        """
+        Refreshes the socket's line in presence:{user_id}, and adds it to
+        visible:{user_id} or takes it out.
+        """
+        key, tabs = presence_key(user_id), visible_key(user_id)
+        now = time.time()
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
-                pipe.zadd(key, {socket_id: time.time()})
+                pipe.zadd(key, {socket_id: now})
                 pipe.expire(key, PRESENCE_TTL_SECONDS)
+                if visible:
+                    # lines of crashed gateways would stay while another tab keeps the TTL fresh
+                    pipe.zremrangebyscore(tabs, "-inf", now - PRESENCE_TTL_SECONDS)
+                    pipe.zadd(tabs, {socket_id: now})
+                    pipe.expire(tabs, PRESENCE_TTL_SECONDS)
+                else:
+                    pipe.zrem(tabs, socket_id)
                 await pipe.execute()
         except RedisError:
             logger.warning("Presence update failed for user %s", user_id, exc_info=True)

@@ -514,12 +514,13 @@ class SyncFakes:
 class FakePresence:
     """
     Stands in for PresenceStore. `lines` are the open sockets per user, `heartbeats` the refreshed
-    ones, `sent` the online and offline calls and `online` what list_online finds per team.
+    ones with their visible flag, `sent` the online and offline calls and `online` what
+    list_online finds per team.
     """
 
     def __init__(self) -> None:
         self.lines: dict[uuid.UUID, set[str]] = {}
-        self.heartbeats: list[tuple[uuid.UUID, str]] = []
+        self.heartbeats: list[tuple[uuid.UUID, str, bool]] = []
         self.sent: list[tuple[str, uuid.UUID, list[uuid.UUID]]] = []
         self.online: dict[uuid.UUID, list[uuid.UUID]] = {}
 
@@ -528,8 +529,8 @@ class FakePresence:
         self.lines.setdefault(user_id, set()).add(socket_id)
         return first
 
-    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
-        self.heartbeats.append((user_id, socket_id))
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str, visible: bool) -> None:
+        self.heartbeats.append((user_id, socket_id, visible))
 
     async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
         self.lines.get(user_id, set()).discard(socket_id)

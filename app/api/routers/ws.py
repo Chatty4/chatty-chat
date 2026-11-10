@@ -56,7 +56,7 @@ async def handle_message(
         case Heartbeat():
             websocket.state.visible = message.visible
             websocket.state.last_heartbeat_at = asyncio.get_running_loop().time()
-            await gateway.heartbeat(user.user_id, websocket)
+            await gateway.heartbeat(user.user_id, websocket, message.visible)
             return True
         case Typing():
             await handle_typing(websocket, message, gateway, access, bus, user)

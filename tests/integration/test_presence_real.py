@@ -14,6 +14,7 @@ from app.clients.presence import (
     online_key,
     presence_channel,
     presence_key,
+    visible_key,
 )
 from app.core.config import get_settings
 from app.services.connection_registry import ConnectionRegistry
@@ -43,7 +44,7 @@ def user_id() -> uuid.UUID:
 @pytest.fixture
 async def clean_keys(redis, team_id, user_id) -> AsyncGenerator[None]:
     yield
-    await redis.delete(online_key(team_id), presence_key(user_id))
+    await redis.delete(online_key(team_id), presence_key(user_id), visible_key(user_id))
 
 
 @pytest.fixture
@@ -154,10 +155,43 @@ async def test_a_heartbeat_updates_the_line_and_resets_the_ttl(redis, clean_keys
     await redis.expire(presence_key(user_id), 5)
     await redis.zadd(presence_key(user_id), {"socket": 0})
 
-    await store.heartbeat(user_id, "socket")
+    await store.heartbeat(user_id, "socket", visible=False)
 
     assert await redis.ttl(presence_key(user_id)) > 5
     assert await redis.zscore(presence_key(user_id), "socket") > 0
+
+
+async def test_a_visible_heartbeat_adds_the_socket_and_a_hidden_one_removes_it(
+    redis, clean_keys, user_id
+):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "socket")
+
+    await store.heartbeat(user_id, "socket", visible=True)
+    assert await redis.zscore(visible_key(user_id), "socket") > 0
+    assert 0 < await redis.ttl(visible_key(user_id)) <= PRESENCE_TTL_SECONDS
+
+    await store.heartbeat(user_id, "socket", visible=False)
+    assert await redis.zscore(visible_key(user_id), "socket") is None
+    assert await redis.zscore(presence_key(user_id), "socket") is not None  # still online
+
+
+async def test_a_hidden_tab_leaves_another_visible_one(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+
+    await store.heartbeat(user_id, "laptop", visible=True)
+    await store.heartbeat(user_id, "phone", visible=False)
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["laptop"]
+
+
+async def test_a_visible_heartbeat_drops_lines_of_crashed_gateways(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await redis.zadd(visible_key(user_id), {"crashed": time.time() - PRESENCE_TTL_SECONDS - 1})
+
+    await store.heartbeat(user_id, "socket", visible=True)
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["socket"]
 
 
 async def test_an_expired_user_is_left_out_of_the_list_but_stays_in_the_set(

@@ -354,6 +354,18 @@ async def test_heartbeat_stores_visible_and_last_heartbeat_at(gateway):
     assert socket.state.last_heartbeat_at >= before
 
 
+@pytest.mark.parametrize("visible", [True, False])
+async def test_heartbeat_passes_visible_to_presence(gateway, presence, visible):
+    socket = HeartbeatSocket()
+    await gateway.connect(USER_ID, socket, [])
+    raw = json.dumps({"type": "heartbeat", "visible": visible})
+
+    await handle(socket, raw, gateway, memberships(USER_ID))
+
+    [(user_id, _, sent_visible)] = presence.heartbeats
+    assert (user_id, sent_visible) == (USER_ID, visible)
+
+
 @pytest.mark.parametrize(
     "raw",
     [

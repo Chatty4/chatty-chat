@@ -27,7 +27,8 @@ async def test_a_redis_error_never_counts_as_first_or_last(store):
 
 
 async def test_a_redis_error_in_a_write_is_only_logged(store):
-    await store.heartbeat(USER_ID, "socket")
+    await store.heartbeat(USER_ID, "socket", visible=True)
+    await store.heartbeat(USER_ID, "socket", visible=False)
     await store.go_online(USER_ID, [TEAM_ID])
     await store.go_offline(USER_ID, [TEAM_ID])
 

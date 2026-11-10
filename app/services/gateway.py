@@ -93,8 +93,8 @@ class Gateway:
         if await self._presence.socket_opened(user_id, self._socket_ids[socket]):
             await self._presence.go_online(user_id, team_ids)
 
-    async def heartbeat(self, user_id: uuid.UUID, socket: Socket) -> None:
-        await self._presence.heartbeat(user_id, self._socket_ids[socket])
+    async def heartbeat(self, user_id: uuid.UUID, socket: Socket, visible: bool) -> None:
+        await self._presence.heartbeat(user_id, self._socket_ids[socket], visible)
 
     async def disconnect(self, user_id: uuid.UUID, socket: Socket) -> None:
         """
