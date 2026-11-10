@@ -81,14 +81,15 @@ class PresenceStore:
             logger.warning("Presence update failed for user %s", user_id, exc_info=True)
 
     async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
-        """True when this was the user's last socket."""
+        """True when this was the user's last socket. Also takes it out of visible:{user_id}."""
         key = presence_key(user_id)
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
                 pipe.zrem(key, socket_id)
                 pipe.zremrangebyscore(key, "-inf", time.time() - PRESENCE_TTL_SECONDS)
                 pipe.zcard(key)
-                _, _, lines_left = await pipe.execute()
+                pipe.zrem(visible_key(user_id), socket_id)
+                _, _, lines_left, _ = await pipe.execute()
         except RedisError:
             logger.warning("Presence update failed for user %s", user_id, exc_info=True)
             return False

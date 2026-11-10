@@ -194,6 +194,39 @@ async def test_a_visible_heartbeat_drops_lines_of_crashed_gateways(redis, clean_
     assert await redis.zrange(visible_key(user_id), 0, -1) == ["socket"]
 
 
+async def test_a_closed_socket_leaves_the_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "socket")
+    await store.heartbeat(user_id, "socket", visible=True)
+
+    assert await store.socket_closed(user_id, "socket") is True
+
+    assert await redis.exists(visible_key(user_id)) == 0
+
+
+async def test_a_closed_socket_leaves_the_other_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    for socket_id in ("laptop", "desktop"):
+        await store.socket_opened(user_id, socket_id)
+        await store.heartbeat(user_id, socket_id, visible=True)
+
+    assert await store.socket_closed(user_id, "laptop") is False
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["desktop"]
+
+
+async def test_disconnect_takes_the_socket_out_of_the_visible_tabs(start_gateway, redis, user_id):
+    gateway = start_gateway()
+    tab = FakeSocket()
+    await gateway.connect(user_id, tab, [])
+    await gateway.heartbeat(user_id, tab, visible=True)
+    assert await redis.exists(visible_key(user_id)) == 1
+
+    await gateway.disconnect(user_id, tab)
+
+    assert await redis.exists(visible_key(user_id)) == 0
+
+
 async def test_an_expired_user_is_left_out_of_the_list_but_stays_in_the_set(
     redis, clean_keys, team_id, user_id
 ):
