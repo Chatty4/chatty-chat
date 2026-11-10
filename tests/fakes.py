@@ -514,8 +514,8 @@ class SyncFakes:
 class FakePresence:
     """
     Stands in for PresenceStore. `lines` are the open sockets per user, `heartbeats` the refreshed
-    ones with their visible flag, `sent` the online and offline calls and `online` what
-    list_online finds per team.
+    ones with their visible flag, `sent` the online and offline calls, `online` what
+    list_online finds per team and `looking` the users is_looking says have a tab on screen.
     """
 
     def __init__(self) -> None:
@@ -523,6 +523,7 @@ class FakePresence:
         self.heartbeats: list[tuple[uuid.UUID, str, bool]] = []
         self.sent: list[tuple[str, uuid.UUID, list[uuid.UUID]]] = []
         self.online: dict[uuid.UUID, list[uuid.UUID]] = {}
+        self.looking: set[uuid.UUID] = set()
 
     async def socket_opened(self, user_id: uuid.UUID, socket_id: str) -> bool:
         first = not self.lines.get(user_id)
@@ -544,6 +545,9 @@ class FakePresence:
 
     async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
         return self.online.get(team_id, [])
+
+    async def is_looking(self, user_id: uuid.UUID) -> bool:
+        return user_id in self.looking
 
 
 class ReadStateFakes:

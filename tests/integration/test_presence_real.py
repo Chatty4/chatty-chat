@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 
 from app.clients.presence import (
     PRESENCE_TTL_SECONDS,
+    VISIBLE_WINDOW_SECONDS,
     PresenceStore,
     online_key,
     presence_channel,
@@ -225,6 +226,30 @@ async def test_disconnect_takes_the_socket_out_of_the_visible_tabs(start_gateway
     await gateway.disconnect(user_id, tab)
 
     assert await redis.exists(visible_key(user_id)) == 0
+
+
+async def test_is_looking_counts_only_recent_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    assert await store.is_looking(user_id) is False  # no tab at all
+
+    await store.heartbeat(user_id, "phone", visible=False)
+    assert await store.is_looking(user_id) is False
+
+    await store.heartbeat(user_id, "laptop", visible=True)
+    assert await store.is_looking(user_id) is True
+
+    await redis.zadd(visible_key(user_id), {"laptop": time.time() - VISIBLE_WINDOW_SECONDS - 1})
+    assert await store.is_looking(user_id) is False  # its gateway crashed
+
+
+async def test_is_looking_stops_when_the_last_visible_tab_closes(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "laptop")
+    await store.heartbeat(user_id, "laptop", visible=True)
+
+    await store.socket_closed(user_id, "laptop")
+
+    assert await store.is_looking(user_id) is False
 
 
 async def test_an_expired_user_is_left_out_of_the_list_but_stays_in_the_set(

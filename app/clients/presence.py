@@ -12,6 +12,7 @@ from app.schemas.presence import PresenceFrame, PresenceStatus
 logger = logging.getLogger(__name__)
 
 PRESENCE_TTL_SECONDS = 60  # the same as the heartbeat timeout
+VISIBLE_WINDOW_SECONDS = 45
 PRESENCE_CHANNEL_PREFIX = "chat.presence:"
 
 
@@ -128,6 +129,21 @@ class PresenceStore:
             logger.warning("Presence read failed for team %s", team_id, exc_info=True)
             return []
         return [uuid.UUID(m) for m, is_alive in zip(members, alive, strict=True) if is_alive]
+
+    async def is_looking(self, user_id: uuid.UUID) -> bool:
+        """
+        True when a tab of the user was on screen in the last 45 s; the push worker then sends
+        nothing. A socket of a crashed gateway stays in the set but stops counting. A Redis error
+        gives False: an extra notification is better than a missed one.
+        """
+        try:
+            count = await self._redis.zcount(
+                visible_key(user_id), time.time() - VISIBLE_WINDOW_SECONDS, "+inf"
+            )
+        except RedisError:
+            logger.warning("Visible read failed for user %s", user_id, exc_info=True)
+            return False
+        return count > 0
 
     async def _publish(
         self, team_id: uuid.UUID, user_id: uuid.UUID, status: PresenceStatus
