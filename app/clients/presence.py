@@ -12,11 +12,17 @@ from app.schemas.presence import PresenceFrame, PresenceStatus
 logger = logging.getLogger(__name__)
 
 PRESENCE_TTL_SECONDS = 60  # the same as the heartbeat timeout
+VISIBLE_WINDOW_SECONDS = 45
 PRESENCE_CHANNEL_PREFIX = "chat.presence:"
 
 
 def presence_key(user_id: uuid.UUID) -> str:
     return f"presence:{user_id}"
+
+
+def visible_key(user_id: uuid.UUID) -> str:
+    """The user's sockets with a tab on screen, for the push worker (events.md, heartbeat)."""
+    return f"visible:{user_id}"
 
 
 def online_key(team_id: uuid.UUID) -> str:
@@ -53,25 +59,38 @@ class PresenceStore:
             return False
         return lines_before == 0
 
-    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
-        key = presence_key(user_id)
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str, visible: bool) -> None:
+        """
+        Refreshes the socket's line in presence:{user_id}, and adds it to
+        visible:{user_id} or takes it out.
+        """
+        key, tabs = presence_key(user_id), visible_key(user_id)
+        now = time.time()
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
-                pipe.zadd(key, {socket_id: time.time()})
+                pipe.zadd(key, {socket_id: now})
                 pipe.expire(key, PRESENCE_TTL_SECONDS)
+                if visible:
+                    # lines of crashed gateways would stay while another tab keeps the TTL fresh
+                    pipe.zremrangebyscore(tabs, "-inf", now - PRESENCE_TTL_SECONDS)
+                    pipe.zadd(tabs, {socket_id: now})
+                    pipe.expire(tabs, PRESENCE_TTL_SECONDS)
+                else:
+                    pipe.zrem(tabs, socket_id)
                 await pipe.execute()
         except RedisError:
             logger.warning("Presence update failed for user %s", user_id, exc_info=True)
 
     async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
-        """True when this was the user's last socket."""
+        """True when this was the user's last socket. Also takes it out of visible:{user_id}."""
         key = presence_key(user_id)
         try:
             async with self._redis.pipeline(transaction=True) as pipe:
                 pipe.zrem(key, socket_id)
                 pipe.zremrangebyscore(key, "-inf", time.time() - PRESENCE_TTL_SECONDS)
                 pipe.zcard(key)
-                _, _, lines_left = await pipe.execute()
+                pipe.zrem(visible_key(user_id), socket_id)
+                _, _, lines_left, _ = await pipe.execute()
         except RedisError:
             logger.warning("Presence update failed for user %s", user_id, exc_info=True)
             return False
@@ -110,6 +129,21 @@ class PresenceStore:
             logger.warning("Presence read failed for team %s", team_id, exc_info=True)
             return []
         return [uuid.UUID(m) for m, is_alive in zip(members, alive, strict=True) if is_alive]
+
+    async def is_looking(self, user_id: uuid.UUID) -> bool:
+        """
+        True when a tab of the user was on screen in the last 45 s; the push worker then sends
+        nothing. A socket of a crashed gateway stays in the set but stops counting. A Redis error
+        gives False: an extra notification is better than a missed one.
+        """
+        try:
+            count = await self._redis.zcount(
+                visible_key(user_id), time.time() - VISIBLE_WINDOW_SECONDS, "+inf"
+            )
+        except RedisError:
+            logger.warning("Visible read failed for user %s", user_id, exc_info=True)
+            return False
+        return count > 0
 
     async def _publish(
         self, team_id: uuid.UUID, user_id: uuid.UUID, status: PresenceStatus

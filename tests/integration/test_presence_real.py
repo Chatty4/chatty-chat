@@ -10,10 +10,12 @@ from redis.asyncio import Redis
 
 from app.clients.presence import (
     PRESENCE_TTL_SECONDS,
+    VISIBLE_WINDOW_SECONDS,
     PresenceStore,
     online_key,
     presence_channel,
     presence_key,
+    visible_key,
 )
 from app.core.config import get_settings
 from app.services.connection_registry import ConnectionRegistry
@@ -43,7 +45,7 @@ def user_id() -> uuid.UUID:
 @pytest.fixture
 async def clean_keys(redis, team_id, user_id) -> AsyncGenerator[None]:
     yield
-    await redis.delete(online_key(team_id), presence_key(user_id))
+    await redis.delete(online_key(team_id), presence_key(user_id), visible_key(user_id))
 
 
 @pytest.fixture
@@ -154,10 +156,100 @@ async def test_a_heartbeat_updates_the_line_and_resets_the_ttl(redis, clean_keys
     await redis.expire(presence_key(user_id), 5)
     await redis.zadd(presence_key(user_id), {"socket": 0})
 
-    await store.heartbeat(user_id, "socket")
+    await store.heartbeat(user_id, "socket", visible=False)
 
     assert await redis.ttl(presence_key(user_id)) > 5
     assert await redis.zscore(presence_key(user_id), "socket") > 0
+
+
+async def test_a_visible_heartbeat_adds_the_socket_and_a_hidden_one_removes_it(
+    redis, clean_keys, user_id
+):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "socket")
+
+    await store.heartbeat(user_id, "socket", visible=True)
+    assert await redis.zscore(visible_key(user_id), "socket") > 0
+    assert 0 < await redis.ttl(visible_key(user_id)) <= PRESENCE_TTL_SECONDS
+
+    await store.heartbeat(user_id, "socket", visible=False)
+    assert await redis.zscore(visible_key(user_id), "socket") is None
+    assert await redis.zscore(presence_key(user_id), "socket") is not None  # still online
+
+
+async def test_a_hidden_tab_leaves_another_visible_one(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+
+    await store.heartbeat(user_id, "laptop", visible=True)
+    await store.heartbeat(user_id, "phone", visible=False)
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["laptop"]
+
+
+async def test_a_visible_heartbeat_drops_lines_of_crashed_gateways(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await redis.zadd(visible_key(user_id), {"crashed": time.time() - PRESENCE_TTL_SECONDS - 1})
+
+    await store.heartbeat(user_id, "socket", visible=True)
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["socket"]
+
+
+async def test_a_closed_socket_leaves_the_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "socket")
+    await store.heartbeat(user_id, "socket", visible=True)
+
+    assert await store.socket_closed(user_id, "socket") is True
+
+    assert await redis.exists(visible_key(user_id)) == 0
+
+
+async def test_a_closed_socket_leaves_the_other_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    for socket_id in ("laptop", "desktop"):
+        await store.socket_opened(user_id, socket_id)
+        await store.heartbeat(user_id, socket_id, visible=True)
+
+    assert await store.socket_closed(user_id, "laptop") is False
+
+    assert await redis.zrange(visible_key(user_id), 0, -1) == ["desktop"]
+
+
+async def test_disconnect_takes_the_socket_out_of_the_visible_tabs(start_gateway, redis, user_id):
+    gateway = start_gateway()
+    tab = FakeSocket()
+    await gateway.connect(user_id, tab, [])
+    await gateway.heartbeat(user_id, tab, visible=True)
+    assert await redis.exists(visible_key(user_id)) == 1
+
+    await gateway.disconnect(user_id, tab)
+
+    assert await redis.exists(visible_key(user_id)) == 0
+
+
+async def test_is_looking_counts_only_recent_visible_tabs(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    assert await store.is_looking(user_id) is False  # no tab at all
+
+    await store.heartbeat(user_id, "phone", visible=False)
+    assert await store.is_looking(user_id) is False
+
+    await store.heartbeat(user_id, "laptop", visible=True)
+    assert await store.is_looking(user_id) is True
+
+    await redis.zadd(visible_key(user_id), {"laptop": time.time() - VISIBLE_WINDOW_SECONDS - 1})
+    assert await store.is_looking(user_id) is False  # its gateway crashed
+
+
+async def test_is_looking_stops_when_the_last_visible_tab_closes(redis, clean_keys, user_id):
+    store = PresenceStore(redis)
+    await store.socket_opened(user_id, "laptop")
+    await store.heartbeat(user_id, "laptop", visible=True)
+
+    await store.socket_closed(user_id, "laptop")
+
+    assert await store.is_looking(user_id) is False
 
 
 async def test_an_expired_user_is_left_out_of_the_list_but_stays_in_the_set(

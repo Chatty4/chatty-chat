@@ -514,22 +514,24 @@ class SyncFakes:
 class FakePresence:
     """
     Stands in for PresenceStore. `lines` are the open sockets per user, `heartbeats` the refreshed
-    ones, `sent` the online and offline calls and `online` what list_online finds per team.
+    ones with their visible flag, `sent` the online and offline calls, `online` what
+    list_online finds per team and `looking` the users is_looking says have a tab on screen.
     """
 
     def __init__(self) -> None:
         self.lines: dict[uuid.UUID, set[str]] = {}
-        self.heartbeats: list[tuple[uuid.UUID, str]] = []
+        self.heartbeats: list[tuple[uuid.UUID, str, bool]] = []
         self.sent: list[tuple[str, uuid.UUID, list[uuid.UUID]]] = []
         self.online: dict[uuid.UUID, list[uuid.UUID]] = {}
+        self.looking: set[uuid.UUID] = set()
 
     async def socket_opened(self, user_id: uuid.UUID, socket_id: str) -> bool:
         first = not self.lines.get(user_id)
         self.lines.setdefault(user_id, set()).add(socket_id)
         return first
 
-    async def heartbeat(self, user_id: uuid.UUID, socket_id: str) -> None:
-        self.heartbeats.append((user_id, socket_id))
+    async def heartbeat(self, user_id: uuid.UUID, socket_id: str, visible: bool) -> None:
+        self.heartbeats.append((user_id, socket_id, visible))
 
     async def socket_closed(self, user_id: uuid.UUID, socket_id: str) -> bool:
         self.lines.get(user_id, set()).discard(socket_id)
@@ -543,6 +545,9 @@ class FakePresence:
 
     async def list_online(self, team_id: uuid.UUID) -> list[uuid.UUID]:
         return self.online.get(team_id, [])
+
+    async def is_looking(self, user_id: uuid.UUID) -> bool:
+        return user_id in self.looking
 
 
 class ReadStateFakes:

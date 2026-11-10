@@ -18,6 +18,7 @@ def store() -> PresenceStore:
     redis.sadd = AsyncMock(side_effect=down)
     redis.srem = AsyncMock(side_effect=down)
     redis.smembers = AsyncMock(side_effect=down)
+    redis.zcount = AsyncMock(side_effect=down)
     return PresenceStore(redis)
 
 
@@ -27,10 +28,16 @@ async def test_a_redis_error_never_counts_as_first_or_last(store):
 
 
 async def test_a_redis_error_in_a_write_is_only_logged(store):
-    await store.heartbeat(USER_ID, "socket")
+    await store.heartbeat(USER_ID, "socket", visible=True)
+    await store.heartbeat(USER_ID, "socket", visible=False)
     await store.go_online(USER_ID, [TEAM_ID])
     await store.go_offline(USER_ID, [TEAM_ID])
 
 
 async def test_a_redis_error_in_the_list_gives_an_empty_list(store):
     assert await store.list_online(TEAM_ID) == []
+
+
+async def test_a_redis_error_counts_as_not_looking(store):
+    # an extra notification is better than a missed one
+    assert await store.is_looking(USER_ID) is False
