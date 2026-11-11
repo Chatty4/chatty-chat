@@ -70,30 +70,30 @@ async def wait(event: asyncio.Event, seconds: float) -> bool:
     return event.is_set()
 
 
-async def unpublished(sessions, *channel_ids: uuid.UUID) -> list[tuple[uuid.UUID, int]]:
-    """What lock_unpublished returns for these channels (the shared database may hold others)."""
+async def unpublished(sessions) -> list[tuple[uuid.UUID, int]]:
+    """What lock_unpublished returns, as (channel_id, seq)."""
     async with sessions.begin() as session:
-        rows = await ChannelEventRepository(session).lock_unpublished(limit=10_000)
-    return [(row.channel_id, row.seq) for row in rows if row.channel_id in channel_ids]
+        rows = await ChannelEventRepository(session).lock_unpublished(limit=100)
+    return [(row.channel_id, row.seq) for row in rows]
 
 
-async def test_unpublished_events_come_oldest_first(sessions, channels):
-    first, second = channels(), channels()
-    await add_events(sessions, first, 2)
-    await add_events(sessions, second, 1)
+async def test_unpublished_events_come_oldest_first(outbox_db):
+    first, second = uuid.uuid4(), uuid.uuid4()
+    await add_events(outbox_db, first, 2)
+    await add_events(outbox_db, second, 1)
 
-    assert await unpublished(sessions, first, second) == [(first, 1), (first, 2), (second, 1)]
+    assert await unpublished(outbox_db) == [(first, 1), (first, 2), (second, 1)]
 
 
-async def test_published_events_are_left_out_and_marked_with_a_time(sessions, channels):
-    room = channels()
-    sent, waiting = await add_events(sessions, room, 2)
+async def test_published_events_are_left_out_and_marked_with_a_time(outbox_db):
+    room = uuid.uuid4()
+    sent, waiting = await add_events(outbox_db, room, 2)
 
-    async with sessions.begin() as session:
+    async with outbox_db.begin() as session:
         await ChannelEventRepository(session).mark_published([sent])
 
-    assert await unpublished(sessions, room) == [(room, 2)]
-    async with sessions() as session:
+    assert await unpublished(outbox_db) == [(room, 2)]
+    async with outbox_db() as session:
         stmt = select(ChannelEvent.id, ChannelEvent.published_at).where(
             ChannelEvent.id.in_([sent, waiting])
         )
