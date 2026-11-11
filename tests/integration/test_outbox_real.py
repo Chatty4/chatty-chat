@@ -1,10 +1,14 @@
+import asyncio
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.jobs.relay import asyncpg_connection
 from app.models import ChannelEvent
 from app.repositories import ChannelEventRepository
 from app.schemas.events import EventType
@@ -44,6 +48,28 @@ async def add_events(sessions, channel_id: uuid.UUID, count: int) -> list[int]:
     return [row.id for row in rows]
 
 
+@pytest.fixture
+async def notified(sessions) -> AsyncGenerator[asyncio.Event]:
+    """Set when a NOTIFY chat_events arrives, like the relay listens for it."""
+    event = asyncio.Event()
+
+    def on_notify(*_: object) -> None:
+        event.set()
+
+    async with sessions.kw["bind"].connect() as listener:
+        conn = await asyncpg_connection(listener)
+        await conn.add_listener("chat_events", on_notify)
+        yield event
+        await conn.remove_listener("chat_events", on_notify)
+
+
+async def wait(event: asyncio.Event, seconds: float) -> bool:
+    with suppress(TimeoutError):
+        async with asyncio.timeout(seconds):
+            await event.wait()
+    return event.is_set()
+
+
 async def unpublished(sessions, *channel_ids: uuid.UUID) -> list[tuple[uuid.UUID, int]]:
     """What lock_unpublished returns for these channels (the shared database may hold others)."""
     async with sessions.begin() as session:
@@ -74,3 +100,20 @@ async def test_published_events_are_left_out_and_marked_with_a_time(sessions, ch
         published = dict((await session.execute(stmt)).all())
     assert published[sent] is not None
     assert published[waiting] is None
+
+
+async def test_a_committed_insert_sends_a_notify(sessions, channels, notified):
+    await add_events(sessions, channels(), 1)
+
+    assert await wait(notified, 2)
+
+
+async def test_a_rolled_back_insert_sends_nothing(sessions, channels, notified):
+    async with sessions() as session:
+        session.add(
+            ChannelEvent(channel_id=channels(), seq=1, type=EventType.MESSAGE_CREATED, payload={})
+        )
+        await session.flush()  # the INSERT runs, so the trigger fires inside the transaction
+        await session.rollback()
+
+    assert not await wait(notified, 0.5)
