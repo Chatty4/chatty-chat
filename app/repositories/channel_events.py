@@ -82,10 +82,11 @@ class ChannelEventRepository:
             await self._session.execute(edited)
 
     async def delete_events_before(self, cutoff: datetime) -> int:
-        """Each channel loses only its oldest events, so sync can still see what was cleaned up."""
+        """Old published events only, oldest first per channel, so sync sees what was removed."""
         old = (
             select(ChannelEvent.channel_id, func.max(ChannelEvent.seq).label("last_old_seq"))
-            .where(ChannelEvent.created_at < cutoff)
+            # the relay publishes in id order, so a channel's published events come before the rest
+            .where(ChannelEvent.created_at < cutoff, ChannelEvent.published_at.is_not(None))
             .group_by(ChannelEvent.channel_id)
             .subquery()
         )
