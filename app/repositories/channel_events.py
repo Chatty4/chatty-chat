@@ -94,3 +94,18 @@ class ChannelEventRepository:
             ChannelEvent.seq <= old.c.last_old_seq,
         )
         return (await self._session.execute(stmt)).rowcount  # type: ignore[attr-defined]
+
+    async def lock_unpublished(self, limit: int) -> list[ChannelEvent]:
+        """Oldest first. No SKIP LOCKED: a row a delete holds must not be passed over."""
+        stmt = (
+            select(ChannelEvent)
+            .where(ChannelEvent.published_at.is_(None))
+            .order_by(ChannelEvent.id)
+            .limit(limit)
+            .with_for_update()
+        )
+        return list(await self._session.scalars(stmt))
+
+    async def mark_published(self, ids: list[int]) -> None:
+        stmt = update(ChannelEvent).where(ChannelEvent.id.in_(ids)).values(published_at=func.now())
+        await self._session.execute(stmt)
