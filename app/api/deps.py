@@ -16,6 +16,7 @@ from app.repositories import (
     ChannelEventRepository,
     MessageRepository,
     PinRepository,
+    PushSubscriptionRepository,
     ReactionRepository,
     ReadStateRepository,
 )
@@ -28,6 +29,7 @@ from app.services.health_service import HealthService
 from app.services.message_service import MessageService
 from app.services.pin_service import PinService
 from app.services.presence_service import PresenceService
+from app.services.push_subscription_service import PushSubscriptionService
 from app.services.reaction_service import ReactionService
 from app.services.read_state_service import ReadStateService
 from app.services.sync_service import SyncService
@@ -147,6 +149,15 @@ def get_read_state_service(
 
 
 ReadStateServiceDep = Annotated[ReadStateService, Depends(get_read_state_service)]
+
+
+def get_push_subscription_service(session: SessionDep) -> PushSubscriptionService:
+    return PushSubscriptionService(session, PushSubscriptionRepository(session))
+
+
+PushSubscriptionServiceDep = Annotated[
+    PushSubscriptionService, Depends(get_push_subscription_service)
+]
 
 
 def get_reaction_service(
