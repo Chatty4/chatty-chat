@@ -9,9 +9,10 @@ jobs:
   ci:
     uses: Chatty4/.github/.github/workflows/python-ci.yml@dev
     with:
-      # Integration tests (tests/integration) need both, see CLAUDE.md.
+      # Integration tests (tests/integration) need all three, see CLAUDE.md.
       needs-postgres: true
       needs-redis: true
+      needs-kafka: true
       database-url-scheme: postgresql+asyncpg
       test-env: |
         CORE_SERVICE_TOKEN=ci-not-secret
