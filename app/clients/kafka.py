@@ -9,7 +9,7 @@ from app.schemas.events import ChannelEvent
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT_MS = 10_000  # every external call has a timeout (CLAUDE.md)
+REQUEST_TIMEOUT_MS = 10_000
 
 
 def encode_key(channel_id: uuid.UUID | None) -> bytes:
