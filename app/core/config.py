@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
 
     CORE_INTERNAL_URL: str = "http://127.0.0.1:8000"
+    KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
+    KAFKA_TOPIC: str = "chat.events"
 
     CORE_SERVICE_TOKEN: SecretStr
     JWT_ALGORITHM: Literal["RS256"] = "RS256"
