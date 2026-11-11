@@ -16,6 +16,8 @@ async def publish_batch(
     """Sends up to 100 events to Kafka in id order and marks them. Any error rolls back."""
     async with session.begin():
         rows = await events.lock_unpublished(BATCH_SIZE)
+        if not rows:
+            return 0
         for row in rows:
             event = ChannelEvent.model_validate(row, from_attributes=True)
             await producer.send_and_wait(topic, event, key=event.channel_id)
