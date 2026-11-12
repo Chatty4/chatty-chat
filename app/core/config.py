@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Web Push (D-13). Only the push worker uses them; it won't start without the key.
     VAPID_PRIVATE_KEY: SecretStr = SecretStr("")
-    VAPID_SUBJET: str = "mailto:dev@chatty.local"
+    VAPID_SUBJECT: str = "mailto:dev@chatty.local"
 
     CORE_SERVICE_TOKEN: SecretStr
     JWT_ALGORITHM: Literal["RS256"] = "RS256"
