@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
     KAFKA_TOPIC: str = "chat.events"
 
+    # Web Push (D-13). Only the push worker uses them; it won't start without the key.
+    VAPID_PRIVATE_KEY: SecretStr = SecretStr("")
+    VAPID_SUBJET: str = "mailto:dev@chatty.local"
+
     CORE_SERVICE_TOKEN: SecretStr
     JWT_ALGORITHM: Literal["RS256"] = "RS256"
     JWT_PUBLIC_KEY_PATH: Path = Path("keys/jwt_public.pem")
