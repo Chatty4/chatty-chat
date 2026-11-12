@@ -89,9 +89,11 @@ class PushService:
             by_user[row.user_id].append(row)
 
         gone: list[str] = []
+        pushed = 0
         for user_id, subscriptions in by_user.items():
             if not await self._dedupe.claim(message.id, user_id):
                 continue
+            pushed += 1
             data = PushNotification(
                 channel_id=event.channel_id,
                 message_id=message.id,
@@ -107,3 +109,7 @@ class PushService:
             async with self._session.begin():
                 for endpoint in gone:
                     await self._subscriptions.delete_by_endpoint(endpoint)
+        if pushed:
+            logger.info(
+                "Pushed seq %s of channel %s to %d users", event.seq, event.channel_id, pushed
+            )
