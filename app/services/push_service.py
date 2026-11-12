@@ -95,6 +95,7 @@ class PushService:
                 continue
             pushed += 1
             data = PushNotification(
+                team_id=channel.team_id,  # the web app's channel URL is /teams/{team}/channels/{id}
                 channel_id=event.channel_id,
                 message_id=message.id,
                 seq=event.seq,

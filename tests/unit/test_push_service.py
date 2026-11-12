@@ -151,6 +151,7 @@ async def test_sends_to_every_browser_of_a_member_with_the_contract_payload():
     data = json.loads(fakes.sender.sent[0][1])
     assert data == {
         "type": "message",
+        "team_id": str(channel.team_id),
         "channel_id": str(channel.channel_id),
         "message_id": event.payload["message"]["id"],
         "seq": 7,

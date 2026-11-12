@@ -74,6 +74,7 @@ class PushNotification(BaseModel):
     """What a browser receives (api-chat.md#push-payload)."""
 
     type: Literal["message"] = "message"
+    team_id: uuid.UUID
     channel_id: uuid.UUID
     message_id: uuid.UUID
     seq: int
