@@ -66,7 +66,7 @@ async def main() -> None:
             )
             await consumer.start()
             logger.info("Push worker started")
-            # shortcut: one event at a time; run more workers 
+            # shortcut: one event at a time; run more workers
             # (up to 6, one per partition) if it lags
             async for record in consumer:
                 if record.value is not None:  # None: a bad record, skip it

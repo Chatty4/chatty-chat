@@ -117,3 +117,26 @@ async def test_delete_keeps_another_users_subscription(sessions, endpoint):
 
     [row] = await rows(sessions, endpoint)
     assert row.user_id == ANA
+
+
+# Queries of the push worker (CHAT-220)
+
+
+async def test_list_for_users_returns_only_their_subscriptions(sessions, endpoint):
+    owner, other = uuid.uuid4(), uuid.uuid4()
+    await save(sessions, owner, endpoint)
+
+    async with sessions() as session:
+        repo = PushSubscriptionRepository(session)
+        assert [row.endpoint for row in await repo.list_for_users([owner, other])] == [endpoint]
+        assert await repo.list_for_users([other]) == []
+        assert await repo.list_for_users([]) == []
+
+
+async def test_delete_by_endpoint_deletes_whoever_owns_it(sessions, endpoint):
+    await save(sessions, ANA, endpoint)
+
+    async with sessions.begin() as session:
+        await PushSubscriptionRepository(session).delete_by_endpoint(endpoint)
+
+    assert await rows(sessions, endpoint) == []
