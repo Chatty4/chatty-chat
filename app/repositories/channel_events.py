@@ -82,10 +82,11 @@ class ChannelEventRepository:
             await self._session.execute(edited)
 
     async def delete_events_before(self, cutoff: datetime) -> int:
-        """Each channel loses only its oldest events, so sync can still see what was cleaned up."""
+        """Old published events only, oldest first per channel, so sync sees what was removed."""
         old = (
             select(ChannelEvent.channel_id, func.max(ChannelEvent.seq).label("last_old_seq"))
-            .where(ChannelEvent.created_at < cutoff)
+            # the relay publishes in id order, so a channel's published events come before the rest
+            .where(ChannelEvent.created_at < cutoff, ChannelEvent.published_at.is_not(None))
             .group_by(ChannelEvent.channel_id)
             .subquery()
         )
@@ -94,3 +95,18 @@ class ChannelEventRepository:
             ChannelEvent.seq <= old.c.last_old_seq,
         )
         return (await self._session.execute(stmt)).rowcount  # type: ignore[attr-defined]
+
+    async def lock_unpublished(self, limit: int) -> list[ChannelEvent]:
+        """Oldest first. No SKIP LOCKED: a row a delete holds must not be passed over."""
+        stmt = (
+            select(ChannelEvent)
+            .where(ChannelEvent.published_at.is_(None))
+            .order_by(ChannelEvent.id)
+            .limit(limit)
+            .with_for_update()
+        )
+        return list(await self._session.scalars(stmt))
+
+    async def mark_published(self, ids: list[int]) -> None:
+        stmt = update(ChannelEvent).where(ChannelEvent.id.in_(ids)).values(published_at=func.now())
+        await self._session.execute(stmt)

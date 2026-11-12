@@ -587,3 +587,30 @@ class FakeSocket:
 
     async def close(self, code: int = 1000, reason: str | None = None) -> None:
         self.closed = (code, reason)
+
+
+class FakeOutbox:
+    """Stands in for ChannelEventRepository in the relay. `rows` are the outbox, oldest first."""
+
+    def __init__(self, rows: list[ChannelEvent]) -> None:
+        self.rows = rows
+        self.published: list[int] = []
+
+    async def lock_unpublished(self, limit: int) -> list[ChannelEvent]:
+        return [row for row in self.rows if row.id not in self.published][:limit]
+
+    async def mark_published(self, ids: list[int]) -> None:
+        self.published.extend(ids)
+
+
+class FakeProducer:
+    """Stands in for AIOKafkaProducer. `sent` are (topic, key, value); with `error`, sends fail."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.sent: list[tuple[str, uuid.UUID, Any]] = []
+        self.error = error
+
+    async def send_and_wait(self, topic: str, value: Any, key: uuid.UUID) -> None:
+        if self.error:
+            raise self.error
+        self.sent.append((topic, key, value))

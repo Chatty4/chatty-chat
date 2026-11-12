@@ -109,11 +109,12 @@ async def test_cleaned_up_events_are_gap_too_large(sessions, room):
     for body in ("a", "b", "c"):
         await send(sessions, room, body)
     now = datetime.now(UTC)
-    async with sessions.begin() as session:  # seq 1 and 2 become older than 30 days
+    # seq 1 and 2 become older than 30 days, and the relay has published them
+    async with sessions.begin() as session:
         await session.execute(
             update(ChannelEvent)
             .where(ChannelEvent.channel_id == room.channel_id, ChannelEvent.seq <= 2)
-            .values(created_at=now - timedelta(days=31))
+            .values(created_at=now - timedelta(days=31), published_at=now)
         )
     async with sessions() as session:
         await clean_up_events(session, now)
