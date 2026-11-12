@@ -1,0 +1,58 @@
+"""Request bodies for Web Push subscriptions (api-chat.md#push, D-13)."""
+
+import base64
+import binascii
+import re
+from typing import Annotated
+from urllib.parse import urlsplit
+
+from pydantic import AfterValidator, BaseModel, Field
+
+_BASE64URL = re.compile(r"[A-Za-z0-9_-]+={0,2}")
+
+
+def check_https_url(value: str) -> str:
+    """The push service URL from the browser: https with a host. Kept exactly as sent."""
+    url = urlsplit(value)
+    if url.scheme != "https" or not url.netloc:
+        raise ValueError("not an https URL")
+    return value
+
+
+def _decode_base64url(value: str) -> bytes:
+    """base64url with or without padding. Plain base64 (+ and /) is rejected."""
+    if not _BASE64URL.fullmatch(value):
+        raise ValueError("not base64url")
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except binascii.Error:
+        raise ValueError("not base64url") from None
+
+
+def check_p256dh(value: str) -> str:
+    """The browser's P-256 public key: 65 bytes once decoded."""
+    if len(_decode_base64url(value)) != 65:
+        raise ValueError("must be 65 bytes")
+    return value
+
+
+def check_auth(value: str) -> str:
+    """The shared secret: 16 bytes once decoded."""
+    if len(_decode_base64url(value)) != 16:
+        raise ValueError("must be 16 bytes")
+    return value
+
+
+Endpoint = Annotated[str, Field(max_length=2048), AfterValidator(check_https_url)]
+P256dh = Annotated[str, Field(max_length=100), AfterValidator(check_p256dh)]
+Auth = Annotated[str, Field(max_length=50), AfterValidator(check_auth)]
+
+
+class SavePushSubscriptionRequest(BaseModel):
+    endpoint: Endpoint
+    p256dh: P256dh
+    auth: Auth
+
+
+class DeletePushSubscriptionRequest(BaseModel):
+    endpoint: Endpoint
