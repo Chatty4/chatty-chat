@@ -3,7 +3,8 @@
 import base64
 import binascii
 import re
-from typing import Annotated
+import uuid
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, BaseModel, Field
@@ -56,3 +57,25 @@ class SavePushSubscriptionRequest(BaseModel):
 
 class DeletePushSubscriptionRequest(BaseModel):
     endpoint: Endpoint
+
+
+class PushMessage(BaseModel):
+    """The fields of message.created's payload.message the push worker needs (events.md)."""
+
+    model_config = {"extra": "ignore"}
+
+    id: uuid.UUID
+    author_id: uuid.UUID
+    body: str | None = None
+    mentions: list[uuid.UUID] = []
+
+
+class PushNotification(BaseModel):
+    """What a browser receives (api-chat.md#push-payload)."""
+
+    type: Literal["message"] = "message"
+    channel_id: uuid.UUID
+    message_id: uuid.UUID
+    seq: int
+    mentioned: bool
+    preview: str
