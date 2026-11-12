@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import ChannelEvent, Message, Pin
+from app.models import ChannelEvent, Message, Pin, PushSubscription
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -614,3 +614,42 @@ class FakeProducer:
         if self.error:
             raise self.error
         self.sent.append((topic, key, value))
+
+
+class FakeSubscriptions:
+    """Stands in for PushSubscriptionRepository. `deleted` are the endpoints it dropped."""
+
+    def __init__(self, *rows: PushSubscription) -> None:
+        self.rows = list(rows)
+        self.deleted: list[str] = []
+
+    async def list_for_users(self, user_ids: Iterable[uuid.UUID]) -> list[PushSubscription]:
+        ids = set(user_ids)
+        return [row for row in self.rows if row.user_id in ids]
+
+    async def delete_by_endpoint(self, endpoint: str) -> None:
+        self.deleted.append(endpoint)
+
+
+class FakeSender:
+    """Stands in for WebPushClient. `sent` is (user_id, data); endpoints in `gone` answer 410."""
+
+    def __init__(self, gone: Iterable[str] = ()) -> None:
+        self.sent: list[tuple[uuid.UUID, str]] = []
+        self._gone = set(gone)
+
+    async def send(self, subscription: PushSubscription, data: str) -> bool:
+        self.sent.append((subscription.user_id, data))
+        return subscription.endpoint not in self._gone
+
+
+class FakeDedupe:
+    """Stands in for PushDedupe, with the same 'first time only' answer."""
+
+    def __init__(self) -> None:
+        self.claimed: set[tuple[uuid.UUID, uuid.UUID]] = set()
+
+    async def claim(self, message_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        first = (message_id, user_id) not in self.claimed
+        self.claimed.add((message_id, user_id))
+        return first
