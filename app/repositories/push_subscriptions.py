@@ -34,6 +34,20 @@ class PushSubscriptionRepository:
         )
         await self._session.execute(stmt)
 
+    async def delete_all_but_newest(self, user_id: uuid.UUID, keep: int) -> None:
+        """Keep the user's `keep` most recently saved subscriptions; delete the rest."""
+        newest = (
+            select(PushSubscription.id)
+            .where(PushSubscription.user_id == user_id)
+            .order_by(PushSubscription.updated_at.desc(), PushSubscription.id)
+            .limit(keep)
+        )
+        await self._session.execute(
+            delete(PushSubscription).where(
+                PushSubscription.user_id == user_id, PushSubscription.id.not_in(newest)
+            )
+        )
+
     async def list_for_users(self, user_ids: Collection[uuid.UUID]) -> list[PushSubscription]:
         """Every subscription of these users: the push worker sends to each browser."""
         if not user_ids:

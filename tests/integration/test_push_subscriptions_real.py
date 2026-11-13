@@ -37,7 +37,7 @@ async def sessions():
 @pytest.fixture
 async def endpoint(sessions):
     """A fresh endpoint, with its row deleted afterwards."""
-    url = f"https://push.example.test/{uuid.uuid4()}"
+    url = f"https://fcm.googleapis.com/fcm/send/{uuid.uuid4()}"
     yield url
     async with sessions.begin() as session:
         await session.execute(delete(PushSubscription).where(PushSubscription.endpoint == url))
@@ -140,3 +140,22 @@ async def test_delete_by_endpoint_deletes_whoever_owns_it(sessions, endpoint):
         await PushSubscriptionRepository(session).delete_by_endpoint(endpoint)
 
     assert await rows(sessions, endpoint) == []
+
+
+async def test_only_the_10_newest_subscriptions_are_kept(sessions):
+    user_id = uuid.uuid4()
+    endpoints = [f"https://fcm.googleapis.com/fcm/send/{uuid.uuid4()}" for _ in range(11)]
+    try:
+        for url in endpoints:  # one by one: each save is its own transaction, so updated_at grows
+            await save(sessions, user_id, url)
+
+        async with sessions() as session:
+            kept = await session.scalars(
+                select(PushSubscription.endpoint).where(PushSubscription.user_id == user_id)
+            )
+            assert set(kept) == set(endpoints[1:])  # the first one saved is gone
+    finally:
+        async with sessions.begin() as session:
+            await session.execute(
+                delete(PushSubscription).where(PushSubscription.user_id == user_id)
+            )

@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories import PushSubscriptionRepository
 from app.schemas.push import DeletePushSubscriptionRequest, SavePushSubscriptionRequest
 
+MAX_SUBSCRIPTIONS = 10
+
 
 class PushSubscriptionService:
     """Web Push subscriptions of the current user's browsers (api-chat.md, "Push"; D-13)."""
@@ -25,6 +27,7 @@ class PushSubscriptionService:
             await self._subscriptions.save_subscription(
                 user_id, request.endpoint, request.p256dh, request.auth
             )
+            await self._subscriptions.delete_all_but_newest(user_id, MAX_SUBSCRIPTIONS)
 
     async def delete_subscription(
         self, user_id: uuid.UUID, request: DeletePushSubscriptionRequest
