@@ -14,6 +14,7 @@ _BASE64URL = re.compile(r"[A-Za-z0-9_-]+={0,2}")
 PUSH_HOSTS = {"fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"}
 PUSH_HOST_SUFFIX = ".notify.windows.com"
 
+
 def check_https_url(value: str) -> str:
     """The push service URL from the browser: https on a known push service. Kept as sent."""
     url = urlsplit(value)

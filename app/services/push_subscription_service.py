@@ -5,7 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories import PushSubscriptionRepository
 from app.schemas.push import DeletePushSubscriptionRequest, SavePushSubscriptionRequest
 
-MAX_SUBSCRIPTIONS = 10 
+MAX_SUBSCRIPTIONS = 10
+
+
 class PushSubscriptionService:
     """Web Push subscriptions of the current user's browsers (api-chat.md, "Push"; D-13)."""
 
