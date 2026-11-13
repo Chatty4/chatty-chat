@@ -11,12 +11,15 @@ from pydantic import AfterValidator, BaseModel, Field
 
 _BASE64URL = re.compile(r"[A-Za-z0-9_-]+={0,2}")
 
+PUSH_HOSTS = {"fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"}
+PUSH_HOST_SUFFIX = ".notify.windows.com"
 
 def check_https_url(value: str) -> str:
-    """The push service URL from the browser: https with a host. Kept exactly as sent."""
+    """The push service URL from the browser: https on a known push service. Kept as sent."""
     url = urlsplit(value)
-    if url.scheme != "https" or not url.netloc:
-        raise ValueError("not an https URL")
+    host = url.hostname or ""  # lowercased; drops user:pass@ and the port
+    if url.scheme != "https" or not (host in PUSH_HOSTS or host.endswith(PUSH_HOST_SUFFIX)):
+        raise ValueError("not a known push service")
     return value
 
 

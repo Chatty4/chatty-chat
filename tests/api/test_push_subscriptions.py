@@ -95,6 +95,8 @@ async def test_save_ignores_extra_browser_fields(client, auth, service):
         ({"auth": AUTH[:10] + "=" + AUTH[11:]}, {"auth": "invalid"}),
         ({"auth": ""}, {"auth": "invalid"}),
         ({"auth": None}, {"auth": "required"}),
+        ({"endpoint": "https://example.com/x"}, {"endpoint": "invalid"}),
+        ({"endpoint": "https://fcm.googleapis.com@evil.example/x"}, {"endpoint": "invalid"}),
     ],
     ids=[
         "http endpoint",
@@ -108,6 +110,8 @@ async def test_save_ignores_extra_browser_fields(client, auth, service):
         "auth padding in the middle",
         "auth empty",
         "auth missing",
+        "unknown push host",
+        "push host as user info",
     ],
 )
 async def test_invalid_save_is_400(client, auth, service, changes, fields):
