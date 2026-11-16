@@ -41,7 +41,15 @@ async def test_history_is_200_with_messages_has_more_and_last_seq(app, client, a
 
 
 @pytest.mark.parametrize(
-    "params", [{"limit": 0}, {"limit": 101}, {"limit": "x"}, {"before_seq": 0}]
+    "params",
+    [
+        {"limit": 0},
+        {"limit": 101},
+        {"limit": "x"},
+        {"before_seq": 0},
+        {"around_seq": 0},
+        {"after_seq": -1},
+    ],
 )
 async def test_invalid_query_is_400(app, client, auth, params):
     room = channel(USER_ID)
@@ -52,6 +60,33 @@ async def test_invalid_query_is_400(app, client, auth, params):
     assert response.status_code == 400
     error = response.json()["error"]
     assert (error["code"], error["fields"]) == ("validation_error", {next(iter(params)): "invalid"})
+
+
+async def test_around_seq_is_200_with_has_more_after(app, client, auth):
+    room = channel(USER_ID)
+    stored = [saved_message(room.channel_id, USER_ID, uuid.uuid4(), seq=s) for s in range(1, 6)]
+    use(app, room, stored, last_seq=5)
+
+    response = await client.get(
+        url(room.channel_id), params={"around_seq": 3, "limit": 2}, headers=auth
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [message["seq"] for message in data["messages"]] == [3, 2]
+    assert (data["has_more"], data["has_more_after"]) == (True, True)
+
+
+async def test_more_than_one_position_is_400(app, client, auth):
+    room = channel(USER_ID)
+    use(app, room, [])
+
+    response = await client.get(
+        url(room.channel_id), params={"before_seq": 5, "after_seq": 2}, headers=auth
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 async def test_private_channel_user_is_not_in_is_403(app, client, auth):

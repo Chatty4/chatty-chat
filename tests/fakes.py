@@ -230,6 +230,16 @@ class FakeMessages:
         ]
         return sorted(rows, key=lambda message: message.seq, reverse=True)[:limit]
 
+    async def list_messages_after(
+        self, channel_id: uuid.UUID, after_seq: int, limit: int
+    ) -> list[Message]:
+        rows = [
+            message
+            for message in self._stored.values()
+            if message.channel_id == channel_id and message.seq > after_seq
+        ]
+        return sorted(rows, key=lambda message: message.seq)[:limit]
+
 
 class FakeCounters:
     """`per_channel` gives get_last_seq a value per channel; otherwise it returns last_seq."""
