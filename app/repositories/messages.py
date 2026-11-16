@@ -1,11 +1,16 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import Row, func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import MessageAlreadySent
 from app.models import Message
+from app.models.message import SEARCH_CONFIG
+
+HIGHLIGHT_START = "\x02"
+HIGHLIGHT_STOP = "\x03"
 
 
 class MessageRepository:
@@ -102,3 +107,51 @@ class MessageRepository:
             stmt = stmt.where(Message.seq < before_seq)
         stmt = stmt.order_by(Message.seq.desc()).limit(limit)
         return list(await self._session.scalars(stmt))
+
+    async def search_messages(
+        self,
+        *,
+        channel_ids: list[uuid.UUID],
+        query: str,
+        author_id: uuid.UUID | None,
+        before: datetime | None,
+        after: datetime | None,
+        cursor: tuple[float, datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> list[Row[Message, float, str]]:
+        """Best match first, then newest. Rows of (Message, rank, highlight)."""
+
+        if not channel_ids:
+            return []
+
+        tsquery = func.plainto_tsquery(SEARCH_CONFIG, query)
+        rank = func.ts_rank(Message.tsv, tsquery)
+        highlight = func.ts_headline(
+            SEARCH_CONFIG,
+            Message.body,
+            tsquery,
+            f"StartSel={HIGHLIGHT_START}, StopSel={HIGHLIGHT_STOP}",
+        )
+
+        stmt = (
+            select(Message, rank.label("rank"), highlight.label("highlight"))
+            .where(
+                Message.tsv.bool_op("@@")(tsquery),
+                Message.channel_id.in_(channel_ids),
+                Message.deleted_at.is_(None),
+            )
+            .order_by(rank.desc(), Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+
+        if author_id is not None:
+            stmt = stmt.where(Message.author_id == author_id)
+        if before is not None:
+            stmt = stmt.where(Message.created_at < before)
+        if after is not None:
+            stmt = stmt.where(Message.created_at > after)
+
+        if cursor is not None:
+            stmt = stmt.where(tuple_(rank, Message.created_at, Message.id) < tuple_(*cursor))
+
+        return list((await self._session.execute(stmt)).all())
