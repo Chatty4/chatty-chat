@@ -3,9 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
 from app.models import ChannelEvent
 from app.schemas.events import EventType
 from app.services.event_cleanup import clean_up_events
@@ -19,10 +17,9 @@ NEW = NOW - timedelta(days=1)
 
 
 @pytest.fixture
-async def sessions():
-    engine = create_async_engine(get_settings().DATABASE_URL)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
+def sessions(outbox_db):
+    """A database of its own: on the shared one, a running relay publishes the test's events."""
+    return outbox_db
 
 
 @pytest.fixture
