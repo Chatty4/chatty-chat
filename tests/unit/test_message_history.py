@@ -168,3 +168,80 @@ async def test_history_shows_which_messages_are_pinned():
     page = await fakes.service.list_history(USER, room.channel_id, None, 50)
 
     assert {message.seq: message.pinned for message in page.messages} == {1: True, 2: False}
+
+
+async def test_around_seq_returns_both_sides_newest_first():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, *range(1, 11)), last_seq=10)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 4, around_seq=5)
+
+    assert [message.seq for message in page.messages] == [6, 5, 4, 3]
+    assert (page.has_more, page.has_more_after) == (True, True)
+
+
+async def test_around_seq_at_the_start_has_nothing_older():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, *range(1, 11)), last_seq=10)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 4, around_seq=1)
+
+    assert [message.seq for message in page.messages] == [2, 1]
+    assert (page.has_more, page.has_more_after) == (False, True)
+
+
+async def test_around_seq_between_messages_works():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, 1, 2, 4, 5), last_seq=5)  # 3: an edit
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 4, around_seq=3)
+
+    assert [message.seq for message in page.messages] == [5, 4, 2, 1]
+
+
+async def test_after_seq_returns_the_next_messages_not_the_newest():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, *range(1, 11)), last_seq=10)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 3, after_seq=2)
+
+    assert [message.seq for message in page.messages] == [5, 4, 3]
+    assert (page.has_more, page.has_more_after) == (True, True)
+
+
+async def test_after_seq_reaching_the_newest_has_nothing_newer():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, *range(1, 11)), last_seq=10)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 3, after_seq=7)
+
+    assert [message.seq for message in page.messages] == [10, 9, 8]
+    assert page.has_more_after is False
+
+
+async def test_normal_history_never_has_more_after():
+    room = channel(USER_ID)
+    fakes = fakes_for(room, messages_in(room, *range(1, 11)), last_seq=10)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 3)
+
+    assert page.has_more_after is False
+
+
+@pytest.mark.parametrize(
+    "positions",
+    [
+        {"before_seq": 5, "around_seq": 5},
+        {"before_seq": 5, "after_seq": 2},
+        {"around_seq": 5, "after_seq": 2},
+    ],
+)
+async def test_more_than_one_position_is_400(positions):
+    room = channel(USER_ID)
+    fakes = fakes_for(room, [])
+    before_seq = positions.pop("before_seq", None)
+
+    with pytest.raises(AppError) as exc:
+        await fakes.service.list_history(USER, room.channel_id, before_seq, 3, **positions)
+
+    assert (exc.value.status_code, exc.value.code) == (400, ErrorCode.VALIDATION_ERROR)

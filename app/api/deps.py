@@ -32,6 +32,7 @@ from app.services.presence_service import PresenceService
 from app.services.push_subscription_service import PushSubscriptionService
 from app.services.reaction_service import ReactionService
 from app.services.read_state_service import ReadStateService
+from app.services.search_service import SearchService
 from app.services.sync_service import SyncService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -106,6 +107,18 @@ def get_message_service(
 
 
 MessageServiceDep = Annotated[MessageService, Depends(get_message_service)]
+
+
+def get_search_service(session: SessionDep, access: AccessServiceDep) -> SearchService:
+    return SearchService(
+        MessageRepository(session),
+        ReactionRepository(session),
+        PinRepository(session),
+        access,
+    )
+
+
+SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
 
 
 def get_pin_service(session: SessionDep, access: AccessServiceDep, bus: EventBusDep) -> PinService:

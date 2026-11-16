@@ -68,6 +68,7 @@ class MessageResponse(BaseModel):
 class MessageHistoryResponse(BaseModel):
     messages: list[MessageResponse]
     has_more: bool
+    has_more_after: bool = False
     last_seq: int
 
 

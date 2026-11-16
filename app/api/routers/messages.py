@@ -38,9 +38,13 @@ async def list_messages(
     user: CurrentUser,
     service: MessageServiceDep,
     before_seq: Annotated[int | None, Query(ge=1)] = None,
+    around_seq: Annotated[int | None, Query(ge=1)] = None,
+    after_seq: Annotated[int | None, Query(ge=0)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> MessageHistoryResponse:
-    return await service.list_history(user, channel_id, before_seq, limit)
+    return await service.list_history(
+        user, channel_id, before_seq, limit, around_seq=around_seq, after_seq=after_seq
+    )
 
 
 @router.put("/messages/{message_id}", response_model=MessageResponse)
