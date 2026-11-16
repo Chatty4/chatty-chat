@@ -197,9 +197,20 @@ class MessageService:
         return response, True
 
     async def list_history(
-        self, user: Memberships, channel_id: uuid.UUID, before_seq: int | None, limit: int
+        self,
+        user: Memberships,
+        channel_id: uuid.UUID,
+        before_seq: int | None,
+        limit: int,
+        around_seq: int | None = None,
+        after_seq: int | None = None,
     ) -> MessageHistoryResponse:
         """A page of messages, newest first. Deleted ones are included so the order is kept."""
+        if sum(seq is not None for seq in (before_seq, around_seq, after_seq)) > 1:
+            raise ValidationFailed(
+                message="send only one of before_seq, around_seq, after_seq",
+                fields={"around_seq": "conflict"},
+            )
         await self._access.check_can_read(user, channel_id)
 
         async with self._session.begin():
@@ -210,9 +221,31 @@ class MessageService:
 
             last_seq = await self._counters.get_last_seq(channel_id)
 
-            # one extra row tells whether an older page exists.
-            rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
-            page = rows[:limit]
+            # one extra row on a side tells whether more messages exist there.
+            has_more_after = False
+            if around_seq is not None:
+                older_count = limit // 2
+                newer_count = limit - older_count
+                newer = await self._messages.list_messages_after(
+                    channel_id, around_seq - 1, newer_count + 1
+                )
+                older = await self._messages.list_messages_before(
+                    channel_id, around_seq, older_count + 1
+                )
+                has_more_after = len(newer) > newer_count
+                has_more = len(older) > older_count
+                page = newer[:newer_count][::-1] + older[:older_count]
+            elif after_seq is not None:
+                rows = await self._messages.list_messages_after(channel_id, after_seq, limit + 1)
+                has_more_after = len(rows) > limit
+                page = rows[:limit][::-1]
+                has_more = bool(
+                    await self._messages.list_messages_before(channel_id, after_seq + 1, 1)
+                )
+            else:
+                rows = await self._messages.list_messages_before(channel_id, before_seq, limit + 1)
+                has_more = len(rows) > limit
+                page = rows[:limit]
 
             message_ids = [message.id for message in page]
             reactions = await self._reactions.list_reactions(message_ids, user.user_id)
@@ -223,7 +256,8 @@ class MessageService:
                 to_message_response(message, reactions.get(message.id), message.id in pinned)
                 for message in page
             ],
-            has_more=len(rows) > limit,
+            has_more=has_more,
+            has_more_after=has_more_after,
             last_seq=last_seq,
         )
 

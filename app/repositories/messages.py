@@ -108,6 +108,18 @@ class MessageRepository:
         stmt = stmt.order_by(Message.seq.desc()).limit(limit)
         return list(await self._session.scalars(stmt))
 
+    async def list_messages_after(
+        self, channel_id: uuid.UUID, after_seq: int, limit: int
+    ) -> list[Message]:
+        """Oldest first: the next messages with seq > after_seq."""
+        stmt = (
+            select(Message)
+            .where(Message.channel_id == channel_id, Message.seq > after_seq)
+            .order_by(Message.seq)
+            .limit(limit)
+        )
+        return list(await self._session.scalars(stmt))
+
     async def search_messages(
         self,
         *,
