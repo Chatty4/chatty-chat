@@ -1,11 +1,24 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text, UniqueConstraint, Uuid, func, text
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import (
+    BigInteger,
+    Computed,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+SEARCH_CONFIG = "english"  # the search query uses it too; changing it needs a migration
 
 
 class Message(Base):
@@ -13,6 +26,7 @@ class Message(Base):
     __table_args__ = (
         UniqueConstraint("channel_id", "seq"),
         UniqueConstraint("author_id", "client_msg_id"),  # retries return the original message
+        Index("ix_messages_tsv", "tsv", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -24,6 +38,14 @@ class Message(Base):
     mentions: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), server_default=text("'{}'"))
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(
+            f"to_tsvector('{SEARCH_CONFIG}', regexp_replace(body, '<@[0-9a-f-]+>', ' ', 'g'))",
+            persisted=True,
+        ),
+        deferred=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
