@@ -67,17 +67,40 @@ def channel(
 
 
 class FakeCore:
-    """Stands in for CoreClient: returns what it was given, or raises `error`."""
+    """Stands in for CoreClient: returns what it was given, or raises `error`. attach returns
+    `attachments` or raises `attach_error`; attach and detach calls are recorded."""
 
     def __init__(
         self,
         memberships: Memberships | None = None,
         channel: CoreChannel | None = None,
         error: Exception | None = None,
+        *,
+        attachments: list[CoreAttachment] | None = None,
+        attach_error: Exception | None = None,
+        detach_error: Exception | None = None,
     ) -> None:
         self._memberships = memberships
         self._channel = channel
         self._error = error
+        self._attachments = attachments or []
+        self._attach_error = attach_error
+        self._detach_error = detach_error
+        self.attach_calls: list[tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]] = []
+        self.detach_calls: list[list[uuid.UUID]] = []
+
+    async def attach(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
+        self.attach_calls.append((user_id, channel_id, list(file_ids)))
+        if self._attach_error:
+            raise self._attach_error
+        return self._attachments
+
+    async def detach(self, file_ids: list[uuid.UUID]) -> None:
+        self.detach_calls.append(list(file_ids))
+        if self._detach_error:
+            raise self._detach_error
 
     async def get_memberships(self, user_id: uuid.UUID) -> Memberships | None:
         if self._error:
