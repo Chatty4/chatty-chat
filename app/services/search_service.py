@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import html
 import json
+import re
 import uuid
 from datetime import datetime
 
@@ -17,9 +18,15 @@ from app.services.message_service import to_message_response
 
 Cursor = tuple[float, datetime, uuid.UUID]
 
+MENTION = re.compile(r"<@[0-9a-fA-F\x02\x03-]+>")
+
 
 def to_highlight(raw: str) -> str:
     """Escape the user's text first, then turn our markers into <mark>."""
+    # A word can match a piece of a mention's UUID; never mark inside a mention.
+    raw = MENTION.sub(
+        lambda m: m.group().replace(HIGHLIGHT_START, "").replace(HIGHLIGHT_STOP, ""), raw
+    )
     return html.escape(raw).replace(HIGHLIGHT_START, "<mark>").replace(HIGHLIGHT_STOP, "</mark>")
 
 
