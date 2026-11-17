@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import ChannelEvent, Message, Pin, PushSubscription
+from app.models import Attachment, ChannelEvent, Message, Pin, PushSubscription
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -18,7 +18,7 @@ from app.repositories import (
     ReadStateRepository,
 )
 from app.repositories.read_state import UnreadCounts
-from app.schemas.core import CoreChannel, Memberships, TeamMembership
+from app.schemas.core import CoreAttachment, CoreChannel, Memberships, TeamMembership
 from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
@@ -108,6 +108,19 @@ def saved_message(
     )
 
 
+def attached_file(filename: str = "report.pdf", mime: str = "application/pdf") -> CoreAttachment:
+    """A file as chatty-core's attach returns it."""
+    file_id = uuid.uuid4()
+    return CoreAttachment(
+        file_id=file_id,
+        object_key=f"attachments/{uuid.uuid4()}/{file_id}",
+        filename=filename,
+        mime=mime,
+        size=482133,
+        attached_at=datetime.now(UTC),
+    )
+
+
 def saved_event(channel_id: uuid.UUID, seq: int) -> ChannelEvent:
     """A channel event row as it comes back from the database."""
     return ChannelEvent(
@@ -173,6 +186,8 @@ class FakeMessages:
         self._stored = {message.id: message for message in stored or []}
         self._deleted_meanwhile = deleted_meanwhile
         self.inserted: list[Message] = []
+        # message_id -> its files; tests can fill it to show a message with files
+        self.attachments: dict[uuid.UUID, list[Attachment]] = {}
 
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return self._stored.get(message_id)
@@ -219,6 +234,33 @@ class FakeMessages:
         )
         self.inserted.append(message)
         return message
+
+    async def insert_attachments(
+        self, message_id: uuid.UUID, attachments: list[CoreAttachment]
+    ) -> list[Attachment]:
+        rows = [
+            Attachment(
+                file_id=attachment.file_id,
+                message_id=message_id,
+                position=position,
+                object_key=attachment.object_key,
+                filename=attachment.filename,
+                mime=attachment.mime,
+                size=attachment.size,
+            )
+            for position, attachment in enumerate(attachments)
+        ]
+        self.attachments[message_id] = rows
+        return rows
+
+    async def list_attachments(
+        self, message_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Attachment]]:
+        return {
+            message_id: sorted(self.attachments[message_id], key=lambda row: row.position)
+            for message_id in message_ids
+            if self.attachments.get(message_id)
+        }
 
     async def list_messages_before(
         self, channel_id: uuid.UUID, before_seq: int | None, limit: int

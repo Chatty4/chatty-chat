@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel
@@ -69,3 +70,18 @@ class CoreChannel(BaseModel):
     archived: bool
     team_deleted: bool
     members: list[ChannelMember]
+
+
+class CoreAttachment(BaseModel):
+    """A file from POST /internal/files/attach. object_key stays in chatty-chat (D-02)."""
+
+    file_id: uuid.UUID
+    object_key: str
+    filename: str
+    mime: str
+    size: int
+    attached_at: datetime
+
+
+class CoreAttachments(BaseModel):
+    attachments: list[CoreAttachment]
