@@ -181,3 +181,10 @@ async def test_the_last_page_has_no_next_cursor():
     assert len(page.results) == 1
     assert page.next_cursor is None
     assert page.results[0].highlight == "<mark>hi</mark>"
+
+
+def test_highlight_never_marks_inside_a_mention():
+    mention = f"546256e4-2e02-47{HIGHLIGHT_START}cf{HIGHLIGHT_STOP}-a7c1-78f3401e3b4b"
+    raw = f"<@{mention}> {HIGHLIGHT_START}cf{HIGHLIGHT_STOP}"
+
+    assert to_highlight(raw) == ("&lt;@546256e4-2e02-47cf-a7c1-78f3401e3b4b&gt; <mark>cf</mark>")
