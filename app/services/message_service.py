@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 
@@ -6,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
+    AppError,
     Conflict,
     InvalidFile,
     MessageAlreadySent,
@@ -35,6 +37,7 @@ from app.schemas.messages import (
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 
+logger = logging.getLogger(__name__)
 MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
 
 
@@ -213,13 +216,22 @@ class MessageService:
 
         except MessageAlreadySent:
             # A concurrent request with this client_msg_id committed first; this one rolled back.
-            async with self._session.begin():
-                original = await self._messages.get_by_client_msg_id(
-                    user.user_id, data.client_msg_id
-                )
-                if original is None:
-                    raise  # another constraint failed, not a retry
-                return await self._retry(original, user.user_id, channel_id), False
+            try:
+                async with self._session.begin():
+                    original = await self._messages.get_by_client_msg_id(
+                        user.user_id, data.client_msg_id
+                    )
+                    if original is None:
+                        raise  # another constraint failed, not a retry
+                    response = await self._retry(original, user.user_id, channel_id)
+            finally:
+                # the files this request attached aren't in the message that won
+                await self._release_unsaved(user.user_id, data.client_msg_id, attached)
+            return response, False
+
+        except Exception:
+            await self._release_unsaved(user.user_id, data.client_msg_id, attached)
+            raise
 
         await self._bus.publish(
             ChannelEvent(
@@ -231,6 +243,36 @@ class MessageService:
             )
         )
         return response, True
+
+    async def _release_unsaved(
+        self, user_id: uuid.UUID, client_msg_id: uuid.UUID, attached: list[CoreAttachment]
+    ) -> None:
+        """
+        After a failed save: detach the attached files that aren't in a saved message with this
+        client_msg_id (D-03). If that can't be read, they stay attached: the outcome is unknown,
+        and a file of a sent message must never be detached.
+        """
+        if not attached:
+            return
+        try:
+            async with self._session.begin():
+                saved = await self._messages.get_by_client_msg_id(user_id, client_msg_id)
+                files = await self._messages.list_attachments([saved.id] if saved else [])
+        except Exception:
+            logger.warning("Kept files attached, the save is unknown: %s", client_msg_id)
+            return
+
+        kept = {row.file_id for row in files.get(saved.id, [])} if saved else set()
+        unused = [file.file_id for file in attached if file.file_id not in kept]
+        if unused:
+            await self._detach(unused)
+
+    async def _detach(self, file_ids: list[uuid.UUID]) -> None:
+        """Best effort: if it fails, the files stay attached to no message (D-03)."""
+        try:
+            await self._core.detach(file_ids)
+        except AppError:
+            logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
 
     async def list_history(
         self,
