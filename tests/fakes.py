@@ -514,6 +514,7 @@ class MessageFakes:
             cast(ReactionRepository, self.reactions),
             cast(PinRepository, self.pins),
             AccessService(cast(CoreClient, core)),
+            cast(CoreClient, core),
             cast(EventBus, self.bus),
         )
 

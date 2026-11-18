@@ -53,8 +53,11 @@ def get_core_client(conn: HTTPConnection, redis: RedisDep) -> CoreClient:
     return CoreClient(conn.app.state.core_http, redis)
 
 
+CoreClientDep = Annotated[CoreClient, Depends(get_core_client)]
+
+
 def get_access_service(
-    core: Annotated[CoreClient, Depends(get_core_client)],
+    core: CoreClientDep,
 ) -> AccessService:
     return AccessService(core)
 
@@ -91,7 +94,7 @@ ConnectionsDep = Annotated[ConnectionRegistry[WebSocket], Depends(get_connection
 
 
 def get_message_service(
-    session: SessionDep, access: AccessServiceDep, bus: EventBusDep
+    session: SessionDep, access: AccessServiceDep, bus: EventBusDep, core: CoreClientDep
 ) -> MessageService:
     return MessageService(
         session,
@@ -102,6 +105,7 @@ def get_message_service(
         ReactionRepository(session),
         PinRepository(session),
         access,
+        core,
         bus,
     )
 

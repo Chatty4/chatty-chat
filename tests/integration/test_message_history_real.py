@@ -56,6 +56,7 @@ def service(session: AsyncSession, room: CoreChannel) -> MessageService:
         ReactionRepository(session),
         PinRepository(session),
         AccessService(cast(CoreClient, FakeCore(channel=room))),
+        cast(CoreClient, FakeCore()),
         cast(EventBus, FakeBus()),
     )
 

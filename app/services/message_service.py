@@ -3,6 +3,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
     BadRequest,
@@ -134,6 +135,7 @@ class MessageService:
         reactions: ReactionRepository,
         pins: PinRepository,
         access: AccessService,
+        core: CoreClient,
         bus: EventBus,
     ) -> None:
         self._session = session
@@ -144,6 +146,7 @@ class MessageService:
         self._reactions = reactions
         self._pins = pins
         self._access = access
+        self._core = core
         self._bus = bus
 
     async def send(
