@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import CurrentUser, MessageServiceDep
 from app.schemas.messages import (
+    AttachmentUrlsResponse,
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
@@ -64,3 +65,12 @@ async def delete_message(
     service: MessageServiceDep,
 ) -> None:
     await service.delete(user, message_id)
+
+
+@router.get("/messages/{message_id}/attachments", response_model=AttachmentUrlsResponse)
+async def list_attachment_urls(
+    message_id: uuid.UUID,
+    user: CurrentUser,
+    service: MessageServiceDep,
+) -> AttachmentUrlsResponse:
+    return await service.attachment_urls(user, message_id)
