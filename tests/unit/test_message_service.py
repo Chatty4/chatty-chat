@@ -329,3 +329,128 @@ async def test_already_attached_elsewhere_is_invalid_file():
         await fakes.service.send(USER, room.channel_id, request(file_ids=[uuid.uuid4()]))
 
     assert fakes.messages.inserted == []
+
+
+# --- a failed save after attach (D-03) ---
+
+
+class DatabaseDown(Exception):
+    pass
+
+
+async def test_failed_save_detaches_the_attached_files():
+    room = channel(USER_ID)
+    report, chart = attached_file(), attached_file("chart.png", "image/png")
+    core = files_core(room, report, chart)
+    fakes = MessageFakes(core, FakeMessages(insert_error=DatabaseDown()))
+
+    with pytest.raises(DatabaseDown):
+        await fakes.service.send(
+            USER, room.channel_id, request(file_ids=[report.file_id, chart.file_id])
+        )
+
+    assert core.detach_calls == [[report.file_id, chart.file_id]]
+    assert fakes.bus.published == []
+
+
+async def test_failed_save_without_files_doesnt_detach():
+    room = channel(USER_ID)
+    core = files_core(room)
+    fakes = MessageFakes(core, FakeMessages(insert_error=DatabaseDown()))
+
+    with pytest.raises(DatabaseDown):
+        await fakes.service.send(USER, room.channel_id, request())
+
+    assert core.detach_calls == []
+
+
+async def test_save_that_committed_after_all_keeps_its_files(caplog):
+    """The error came after the commit: the message is there with these files, so they stay."""
+    room = channel(USER_ID)
+    report = attached_file()
+    data = request(file_ids=[report.file_id])
+    saved = saved_message(room.channel_id, USER_ID, data.client_msg_id)
+    core = files_core(room, report)
+    messages = FakeMessages(insert_error=DatabaseDown(), saved_meanwhile=saved)
+    await messages.insert_attachments(saved.id, [report])
+    fakes = MessageFakes(core, messages)
+
+    with pytest.raises(DatabaseDown):
+        await fakes.service.send(USER, room.channel_id, data)
+
+    assert core.detach_calls == []
+    assert caplog.text == ""  # it read the saved files; it didn't give up on an unknown save
+
+
+async def test_lost_race_detaches_this_requests_files_and_returns_the_winner():
+    room = channel(USER_ID)
+    report = attached_file()
+    data = request(file_ids=[report.file_id])
+    winner = saved_message(room.channel_id, USER_ID, data.client_msg_id)  # saved without files
+    core = files_core(room, report)
+    messages = FakeMessages(insert_error=MessageAlreadySent(), saved_meanwhile=winner)
+    fakes = MessageFakes(core, messages)
+
+    message, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert not created
+    assert message.id == winner.id
+    assert core.detach_calls == [[report.file_id]]
+
+
+async def test_lost_race_in_another_channel_still_detaches():
+    room = channel(USER_ID)
+    report = attached_file()
+    data = request(file_ids=[report.file_id])
+    winner = saved_message(uuid.uuid4(), USER_ID, data.client_msg_id)
+    core = files_core(room, report)
+    messages = FakeMessages(insert_error=MessageAlreadySent(), saved_meanwhile=winner)
+    fakes = MessageFakes(core, messages)
+
+    with pytest.raises(ValidationFailed):
+        await fakes.service.send(USER, room.channel_id, data)
+
+    assert core.detach_calls == [[report.file_id]]
+
+
+async def test_failed_detach_is_logged_and_the_save_error_raised(caplog):
+    room = channel(USER_ID)
+    report = attached_file()
+    core = files_core(room, report, detach_error=ServiceUnavailable())
+    fakes = MessageFakes(core, FakeMessages(insert_error=DatabaseDown()))
+
+    with pytest.raises(DatabaseDown):
+        await fakes.service.send(USER, room.channel_id, request(file_ids=[report.file_id]))
+
+    assert core.detach_calls == [[report.file_id]]
+    assert f"Failed to detach files ['{report.file_id}']" in caplog.text
+
+
+class LookupFailsAfterTheSave(FakeMessages):
+    """The save fails, and so does every read after it: whether it committed is unknown."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.save_failed = False
+
+    async def get_by_client_msg_id(self, author_id, client_msg_id):
+        if self.save_failed:
+            raise DatabaseDown()
+        return None
+
+    async def insert_message(self, **fields):
+        self.save_failed = True
+        raise DatabaseDown()
+
+
+async def test_unknown_outcome_keeps_the_files_attached(caplog):
+    room = channel(USER_ID)
+    report = attached_file()
+    core = files_core(room, report)
+    fakes = MessageFakes(core, LookupFailsAfterTheSave())
+
+    with pytest.raises(DatabaseDown):
+        await fakes.service.send(USER, room.channel_id, request(file_ids=[report.file_id]))
+
+    assert core.detach_calls == []
+    assert "Kept files attached, the save is unknown" in caplog.text
