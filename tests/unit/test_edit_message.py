@@ -12,6 +12,7 @@ from tests.fakes import (
     FakeCore,
     FakeMessages,
     MessageFakes,
+    attached_file,
     channel,
     memberships,
     saved_message,
@@ -82,14 +83,35 @@ async def test_edit_answer_has_the_reactions_and_pin_of_the_message():
     assert set(payload) == {"message_id", "body", "mentions", "edited_at"}
 
 
-async def test_empty_body_is_refused_before_loading_the_message():
-    fakes = MessageFakes(FakeCore())
+async def test_empty_body_on_a_message_without_files_is_400():
+    room = channel(USER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message)
 
     with pytest.raises(ValidationFailed) as error:
-        await fakes.service.edit(USER, uuid.uuid4(), EditMessageRequest(body=""))
+        await fakes.service.edit(USER, message.id, EditMessageRequest(body=""))
 
     assert error.value.fields == {"body": "required"}
-    assert fakes.log == []
+    assert fakes.log == ["commit", "commit"]  # the two reads: the message, then its files
+    assert fakes.events.rows == []
+    assert fakes.bus.published == []
+
+
+async def test_empty_body_on_a_message_with_files_is_saved():
+    room = channel(USER_ID)
+    message = message_in(room)
+    message.body = "here is the report"
+    fakes = fakes_for(room, message)
+    report = attached_file()
+    await fakes.messages.insert_attachments(message.id, [report])
+
+    response = await fakes.service.edit(USER, message.id, EditMessageRequest(body=""))
+
+    assert (response.body, response.mentions) == ("", [])
+    assert response.file_ids == [report.file_id]  # the files stay
+    assert response.edited_at is not None
+    [(_, _, kind, payload)] = fakes.events.rows
+    assert (kind, payload["body"]) == ("message.edited", "")
 
 
 async def test_missing_message_is_404():

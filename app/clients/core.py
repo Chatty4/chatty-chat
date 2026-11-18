@@ -6,8 +6,9 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from app.core.exceptions import ServiceUnavailable
-from app.schemas.core import CoreChannel, Memberships
+from app.core.codes import ErrorCode
+from app.core.exceptions import Conflict, InvalidFile, ServiceUnavailable
+from app.schemas.core import CoreAttachment, CoreAttachments, CoreChannel, Memberships
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,17 @@ if (redis.call('GET', KEYS[2]) or '0') == ARGV[3]
 end
 return 0
 """
+
+
+# attach's errors about one file (api-internal.md): the message is rejected with invalid_file
+FILE_ERRORS = {
+    "file_not_found",
+    "not_file_owner",
+    "wrong_purpose",
+    "wrong_team",
+    "file_not_ready",
+    "file_already_attached",
+}
 
 
 def members_key(user_id: uuid.UUID) -> str:
@@ -58,6 +70,40 @@ class CoreClient:
         path = f"/internal/channels/{channel_id}"
         return await self._get(channel_key(channel_id), path, CoreChannel)
 
+    async def attach(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
+        """Attach all the files of a message, or none (D-03). Raises InvalidFile for a file
+        chatty-core refuses. On ServiceUnavailable the files may or may not be attached, so
+        nothing may be undone."""
+        path = "/internal/files/attach"
+        body = {
+            "user_id": str(user_id),
+            "channel_id": str(channel_id),
+            "file_ids": [str(file_id) for file_id in file_ids],
+        }
+        response = await self._post(path, body)
+        if response.status_code == 200:
+            return CoreAttachments.model_validate_json(response.text).attachments
+
+        error = response.json().get("error", {})  # chatty-core's error body (api-internal.md)
+        code = error.get("code")
+        if code in FILE_ERRORS:
+            raise InvalidFile(error.get("fields", {}).get("file_id", ""), code)
+        if code == "channel_not_found":  # its team was deleted after the access check
+            raise Conflict(ErrorCode.CHANNEL_ARCHIVED, "The channel's team was deleted")
+
+        logger.error("chatty-core answered %s (%s): POST %s", response.status_code, code, path)
+        raise ServiceUnavailable()
+
+    async def detach(self, file_ids: list[uuid.UUID]) -> None:
+        """Mark the files deleted (D-03). Safe to call again. Raises ServiceUnavailable."""
+        path = "/internal/files/detach"
+        response = await self._post(path, {"file_ids": [str(file_id) for file_id in file_ids]})
+        if response.status_code != 204:
+            logger.error("chatty-core answered %s: POST %s", response.status_code, path)
+            raise ServiceUnavailable()
+
     async def _get[T: BaseModel](self, key: str, path: str, model: type[T]) -> T | None:
         body, version, all_version = await self._read_cache(key)
         if body is None:
@@ -81,6 +127,20 @@ class CoreClient:
             logger.error("chatty-core answered %s: GET %s", response.status_code, path)
             raise ServiceUnavailable()
         return response.text
+
+    async def _post(self, path: str, body: dict) -> httpx.Response:
+        """POST to chatty-core and return its answer for the caller to read. Like _fetch, no
+        answer, a 401 or a 5xx raise ServiceUnavailable. Never cached."""
+        try:
+            response = await self._http.post(path, json=body)
+        except httpx.HTTPError as exc:  # connection refused, timeout
+            logger.warning("chatty-core unreachable: POST %s", path, exc_info=True)
+            raise ServiceUnavailable() from exc
+        if response.status_code == 401 or response.is_server_error:
+            # 401 here means CORE_SERVICE_TOKEN differs between the two services
+            logger.error("chatty-core answered %s: POST %s", response.status_code, path)
+            raise ServiceUnavailable()
+        return response
 
     async def _read_cache(
         self, key: str

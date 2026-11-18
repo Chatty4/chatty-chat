@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     Text,
     UniqueConstraint,
     Uuid,
@@ -58,6 +59,7 @@ class Attachment(Base):
     message_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("messages.id", ondelete="CASCADE"), index=True
     )
+    position: Mapped[int] = mapped_column(SmallInteger)  # the file's index in the sent file_ids
     object_key: Mapped[str] = mapped_column(Text)
     filename: Mapped[str] = mapped_column(Text)
     mime: Mapped[str] = mapped_column(Text)

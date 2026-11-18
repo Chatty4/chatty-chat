@@ -4,13 +4,15 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ServiceUnavailable
 from app.models import Message
 from app.schemas.core import CoreChannel, Memberships, TeamMembership, TeamRole
+from app.services import message_service
 from tests.fakes import (
     FakeCore,
     FakeMessages,
     MessageFakes,
+    attached_file,
     channel,
     memberships,
     saved_message,
@@ -243,3 +245,92 @@ async def test_deleting_a_pinned_message_removes_its_pin_without_pin_removed():
 
     assert_deleted(fakes, message, USER)  # message.deleted is the only event
     assert set(fakes.pins.rows) == {other.id}
+
+
+# --- the message's files (D-03) ---
+
+
+@pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    monkeypatch.setattr(message_service, "DETACH_RETRY_SECONDS", 0)
+
+
+async def with_files(room: CoreChannel, core: FakeCore, *names: str):
+    """A message of USER with these files, and the fakes to delete it."""
+    message = message_in(room)
+    fakes = MessageFakes(core, FakeMessages(stored=[message]))
+    files = [attached_file(name) for name in names]
+    await fakes.messages.insert_attachments(message.id, files)
+    return message, fakes, [file.file_id for file in files]
+
+
+async def test_deleting_a_message_detaches_its_files_after_the_commit():
+    room = channel(USER_ID)
+    core = FakeCore(channel=room)
+    message, fakes, file_ids = await with_files(room, core, "report.pdf", "chart.png")
+
+    await fakes.service.delete(USER, message.id)
+
+    assert core.detach_calls == [file_ids]
+    assert fakes.log == ["commit", "commit", "publish"]  # detach comes after these
+    assert fakes.messages.attachments[message.id]  # the rows stay
+
+
+async def test_a_message_without_files_doesnt_detach():
+    room = channel(USER_ID)
+    core = FakeCore(channel=room)
+    message = message_in(room)
+    fakes = MessageFakes(core, FakeMessages(stored=[message]))
+
+    await fakes.service.delete(USER, message.id)
+
+    assert core.detach_calls == []
+
+
+async def test_already_deleted_message_doesnt_detach_again():
+    room = channel(USER_ID)
+    core = FakeCore(channel=room)
+    message, fakes, _ = await with_files(room, core, "report.pdf")
+    message.deleted_at = datetime.now(UTC)
+
+    await fakes.service.delete(USER, message.id)
+
+    assert core.detach_calls == []
+
+
+class CoreDetachFailsFirst(FakeCore):
+    """detach fails `failures` times, then works."""
+
+    def __init__(self, room: CoreChannel, failures: int) -> None:
+        super().__init__(channel=room)
+        self.failures = failures
+
+    async def detach(self, file_ids):
+        self.detach_calls.append(list(file_ids))
+        if self.failures:
+            self.failures -= 1
+            raise ServiceUnavailable()
+
+
+async def test_detach_is_retried(caplog):
+    room = channel(USER_ID)
+    core = CoreDetachFailsFirst(room, failures=2)
+    message, fakes, file_ids = await with_files(room, core, "report.pdf")
+
+    await fakes.service.delete(USER, message.id)
+
+    assert core.detach_calls == [file_ids] * 3
+    assert "Failed to detach" not in caplog.text
+
+
+async def test_detach_that_keeps_failing_is_logged_and_the_delete_still_works(caplog):
+    room = channel(USER_ID)
+    core = FakeCore(channel=room, detach_error=ServiceUnavailable())
+    message, fakes, file_ids = await with_files(room, core, "report.pdf")
+
+    await fakes.service.delete(USER, message.id)
+
+    assert core.detach_calls == [file_ids] * message_service.DETACH_ATTEMPTS
+    assert f"Failed to detach files ['{file_ids[0]}']" in caplog.text
+    assert message.deleted_at is not None
+    assert fakes.bus.published  # message.deleted was still sent

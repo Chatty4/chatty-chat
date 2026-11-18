@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
-from app.models import ChannelEvent, Message, Pin, PushSubscription
+from app.models import Attachment, ChannelEvent, Message, Pin, PushSubscription
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -18,7 +18,7 @@ from app.repositories import (
     ReadStateRepository,
 )
 from app.repositories.read_state import UnreadCounts
-from app.schemas.core import CoreChannel, Memberships, TeamMembership
+from app.schemas.core import CoreAttachment, CoreChannel, Memberships, TeamMembership
 from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
@@ -67,17 +67,40 @@ def channel(
 
 
 class FakeCore:
-    """Stands in for CoreClient: returns what it was given, or raises `error`."""
+    """Stands in for CoreClient: returns what it was given, or raises `error`. attach returns
+    `attachments` or raises `attach_error`; attach and detach calls are recorded."""
 
     def __init__(
         self,
         memberships: Memberships | None = None,
         channel: CoreChannel | None = None,
         error: Exception | None = None,
+        *,
+        attachments: list[CoreAttachment] | None = None,
+        attach_error: Exception | None = None,
+        detach_error: Exception | None = None,
     ) -> None:
         self._memberships = memberships
         self._channel = channel
         self._error = error
+        self._attachments = attachments or []
+        self._attach_error = attach_error
+        self._detach_error = detach_error
+        self.attach_calls: list[tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]] = []
+        self.detach_calls: list[list[uuid.UUID]] = []
+
+    async def attach(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
+        self.attach_calls.append((user_id, channel_id, list(file_ids)))
+        if self._attach_error:
+            raise self._attach_error
+        return self._attachments
+
+    async def detach(self, file_ids: list[uuid.UUID]) -> None:
+        self.detach_calls.append(list(file_ids))
+        if self._detach_error:
+            raise self._detach_error
 
     async def get_memberships(self, user_id: uuid.UUID) -> Memberships | None:
         if self._error:
@@ -105,6 +128,19 @@ def saved_message(
         edited_at=None,
         deleted_at=None,
         created_at=datetime.now(UTC),
+    )
+
+
+def attached_file(filename: str = "report.pdf", mime: str = "application/pdf") -> CoreAttachment:
+    """A file as chatty-core's attach returns it."""
+    file_id = uuid.uuid4()
+    return CoreAttachment(
+        file_id=file_id,
+        object_key=f"attachments/{uuid.uuid4()}/{file_id}",
+        filename=filename,
+        mime=mime,
+        size=482133,
+        attached_at=datetime.now(UTC),
     )
 
 
@@ -173,6 +209,8 @@ class FakeMessages:
         self._stored = {message.id: message for message in stored or []}
         self._deleted_meanwhile = deleted_meanwhile
         self.inserted: list[Message] = []
+        # message_id -> its files; tests can fill it to show a message with files
+        self.attachments: dict[uuid.UUID, list[Attachment]] = {}
 
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return self._stored.get(message_id)
@@ -219,6 +257,33 @@ class FakeMessages:
         )
         self.inserted.append(message)
         return message
+
+    async def insert_attachments(
+        self, message_id: uuid.UUID, attachments: list[CoreAttachment]
+    ) -> list[Attachment]:
+        rows = [
+            Attachment(
+                file_id=attachment.file_id,
+                message_id=message_id,
+                position=position,
+                object_key=attachment.object_key,
+                filename=attachment.filename,
+                mime=attachment.mime,
+                size=attachment.size,
+            )
+            for position, attachment in enumerate(attachments)
+        ]
+        self.attachments[message_id] = rows
+        return rows
+
+    async def list_attachments(
+        self, message_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Attachment]]:
+        return {
+            message_id: sorted(self.attachments[message_id], key=lambda row: row.position)
+            for message_id in message_ids
+            if self.attachments.get(message_id)
+        }
 
     async def list_messages_before(
         self, channel_id: uuid.UUID, before_seq: int | None, limit: int
@@ -449,6 +514,7 @@ class MessageFakes:
             cast(ReactionRepository, self.reactions),
             cast(PinRepository, self.pins),
             AccessService(cast(CoreClient, core)),
+            cast(CoreClient, core),
             cast(EventBus, self.bus),
         )
 

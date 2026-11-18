@@ -63,6 +63,16 @@ class UserInactive(PermissionDenied):
     message = "This account has been deactivated"
 
 
+class InvalidFile(BadRequest):
+    """chatty-core refused a file of the message (api-internal.md, attach). `reason` is its code,
+    for example file_already_attached; the client only sees invalid_file."""
+
+    def __init__(self, file_id: str, reason: str) -> None:
+        super().__init__(ErrorCode.INVALID_FILE, f"File {file_id} can't be sent: {reason}")
+        self.file_id = file_id
+        self.reason = reason
+
+
 class RateLimited(AppError):
     """`retry_after` (seconds) becomes the Retry-After response header."""
 

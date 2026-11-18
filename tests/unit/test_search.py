@@ -77,6 +77,9 @@ class FakeSearchMessages:
             for seq in range(min(self.count, kwargs["limit"]), 0, -1)
         ]
 
+    async def list_attachments(self, message_ids: list[uuid.UUID]) -> dict:
+        return {}
+
 
 def search_service(messages: FakeSearchMessages) -> SearchService:
     return SearchService(

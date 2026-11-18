@@ -1,18 +1,22 @@
+import asyncio
+import logging
 import re
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
-    BadRequest,
+    AppError,
     Conflict,
+    InvalidFile,
     MessageAlreadySent,
     NotFound,
     PermissionDenied,
     ValidationFailed,
 )
-from app.models import Message
+from app.models import Attachment, Message
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -21,9 +25,10 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
-from app.schemas.core import Memberships
+from app.schemas.core import CoreAttachment, Memberships
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.messages import (
+    AttachmentResponse,
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
@@ -33,7 +38,12 @@ from app.schemas.messages import (
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 
+logger = logging.getLogger(__name__)
+
 MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
+
+DETACH_ATTEMPTS = 3  # after a message is deleted: the first call and two retries
+DETACH_RETRY_SECONDS = 0.2  # times the attempt number: 0.2 s, then 0.4 s
 
 
 class _DeletedMeanwhile(Exception):
@@ -86,12 +96,16 @@ def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionRes
 
 
 def to_message_response(
-    message: Message, reactions: list[tuple[str, int, bool]] | None = None, pinned: bool = False
+    message: Message,
+    reactions: list[tuple[str, int, bool]] | None = None,
+    pinned: bool = False,
+    attachments: list[Attachment] | None = None,
 ) -> MessageResponse:
     """
-    The message object. Files come with CHAT-212, pins with CHAT-204. A deleted message has no
-    reactions (api-chat.md), even if rows from before the delete are still there.
+    The message object. A deleted message has no files and no reactions (api-chat.md), even if
+    rows from before the delete are still there. Attachments come ordered by position.
     """
+    files = [] if message.deleted_at else attachments or []
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -99,8 +113,16 @@ def to_message_response(
         author_id=message.author_id,
         client_msg_id=message.client_msg_id,
         body=message.body,
-        file_ids=[],
-        attachments=[],
+        file_ids=[attachment.file_id for attachment in files],
+        attachments=[
+            AttachmentResponse(
+                file_id=attachment.file_id,
+                filename=attachment.filename,
+                mime=attachment.mime,
+                size=attachment.size,
+            )
+            for attachment in files
+        ],
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
@@ -121,6 +143,7 @@ class MessageService:
         reactions: ReactionRepository,
         pins: PinRepository,
         access: AccessService,
+        core: CoreClient,
         bus: EventBus,
     ) -> None:
         self._session = session
@@ -131,6 +154,7 @@ class MessageService:
         self._reactions = reactions
         self._pins = pins
         self._access = access
+        self._core = core
         self._bus = bus
 
     async def send(
@@ -139,6 +163,11 @@ class MessageService:
         """Send a message. Returns it and whether it is new (201) or a retry (200)."""
         if not data.body and not data.file_ids:
             raise ValidationFailed(fields={"body": "required"})
+
+        if len(set(data.file_ids)) != len(data.file_ids):
+            raise ValidationFailed(
+                message="a file is in file_ids twice", fields={"file_ids": "invalid"}
+            )
 
         # Before the access check: a retry returns the saved message even if the channel was
         # archived since. It is the sender's own message, so nothing new is revealed.
@@ -150,14 +179,28 @@ class MessageService:
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
 
+        # Before the transaction, so none is held during the call to chatty-core (D-03).
+        attached: list[CoreAttachment] = []
+        if data.file_ids:
+            try:
+                attached = await self._core.attach(user.user_id, channel_id, data.file_ids)
+            except InvalidFile as exc:
+                if exc.reason != "file_already_attached":
+                    raise
+                # A concurent request with this client_msg_id may have attached them and saved.
+                async with self._session.begin():
+                    saved = await self._messages.get_by_client_msg_id(
+                        user.user_id, data.client_msg_id
+                    )
+                    if saved is None:
+                        raise
+                    return await self._retry(saved, user.user_id, channel_id), False
+
+            order = {file_id: index for index, file_id in enumerate(data.file_ids)}
+            attached.sort(key=lambda attachment: order[attachment.file_id])
+
         try:
             async with self._session.begin():
-                # TODO(CHAT-212): attach the files through chatty-core before saving (D-03)
-                if data.file_ids:
-                    raise BadRequest(
-                        ErrorCode.INVALID_FILE, "File attachments are not available yet"
-                    )
-
                 seq = await self._counters.next_seq(channel_id)
                 message = await self._messages.insert_message(
                     channel_id=channel_id,
@@ -167,7 +210,8 @@ class MessageService:
                     body=data.body,
                     mentions=mentions,
                 )
-                response = to_message_response(message)
+                files = await self._messages.insert_attachments(message.id, attached)
+                response = to_message_response(message, attachments=files)
                 payload = {"message": response.model_dump(mode="json")}
 
                 await self._events.insert_channel_event(
@@ -177,13 +221,22 @@ class MessageService:
 
         except MessageAlreadySent:
             # A concurrent request with this client_msg_id committed first; this one rolled back.
-            async with self._session.begin():
-                original = await self._messages.get_by_client_msg_id(
-                    user.user_id, data.client_msg_id
-                )
-                if original is None:
-                    raise  # another constraint failed, not a retry
-                return await self._retry(original, user.user_id, channel_id), False
+            try:
+                async with self._session.begin():
+                    original = await self._messages.get_by_client_msg_id(
+                        user.user_id, data.client_msg_id
+                    )
+                    if original is None:
+                        raise  # another constraint failed, not a retry
+                    response = await self._retry(original, user.user_id, channel_id)
+            finally:
+                # the files this request attached aren't in the message that won
+                await self._release_unsaved(user.user_id, data.client_msg_id, attached)
+            return response, False
+
+        except Exception:
+            await self._release_unsaved(user.user_id, data.client_msg_id, attached)
+            raise
 
         await self._bus.publish(
             ChannelEvent(
@@ -195,6 +248,41 @@ class MessageService:
             )
         )
         return response, True
+
+    async def _release_unsaved(
+        self, user_id: uuid.UUID, client_msg_id: uuid.UUID, attached: list[CoreAttachment]
+    ) -> None:
+        """
+        After a failed save: detach the attached files that aren't in a saved message with this
+        client_msg_id (D-03). If that can't be read, they stay attached: the outcome is unknown,
+        and a file of a sent message must never be detached.
+        """
+        if not attached:
+            return
+        try:
+            async with self._session.begin():
+                saved = await self._messages.get_by_client_msg_id(user_id, client_msg_id)
+                files = await self._messages.list_attachments([saved.id] if saved else [])
+        except Exception:
+            logger.warning("Kept files attached, the save is unknown: %s", client_msg_id)
+            return
+
+        kept = {row.file_id for row in files.get(saved.id, [])} if saved else set()
+        unused = [file.file_id for file in attached if file.file_id not in kept]
+        if unused:
+            await self._detach(unused)
+
+    async def _detach(self, file_ids: list[uuid.UUID], attempts: int = 1) -> None:
+        """Best effort, tried `attempts` times: if it keeps failing, the files stay attached
+        to no message."""
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._core.detach(file_ids)
+                return
+            except AppError:
+                if attempt < attempts:
+                    await asyncio.sleep(DETACH_RETRY_SECONDS * attempt)
+        logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
 
     async def list_history(
         self,
@@ -251,9 +339,15 @@ class MessageService:
             reactions = await self._reactions.list_reactions(message_ids, user.user_id)
             pinned = await self._pins.pinned_message_ids(message_ids)
 
+            attachments = await self._messages.list_attachments(message_ids)
         return MessageHistoryResponse(
             messages=[
-                to_message_response(message, reactions.get(message.id), message.id in pinned)
+                to_message_response(
+                    message,
+                    reactions.get(message.id),
+                    message.id in pinned,
+                    attachments.get(message.id),
+                )
                 for message in page
             ],
             has_more=has_more,
@@ -276,24 +370,29 @@ class MessageService:
         return await self._full_response(existing, user_id)
 
     async def _full_response(self, message: Message, user_id: uuid.UUID) -> MessageResponse:
-        """The message object with its reactions and pin. Call inside a transaction."""
+        """The message object with its reactions, pin and files. Call inside a transaction."""
         reactions = await self._reactions.list_reactions([message.id], user_id)
         pinned = await self._pins.pinned_message_ids([message.id])
-        return to_message_response(message, reactions.get(message.id), message.id in pinned)
+        attachments = await self._messages.list_attachments([message.id])
+        return to_message_response(
+            message, reactions.get(message.id), message.id in pinned, attachments.get(message.id)
+        )
 
     async def edit(
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
     ) -> MessageResponse:
         """Edit the body of my message. Takes the next seq and sends message.edited."""
-        # TODO(CHAT-212): empty is allowed when the message has files
-        if not data.body:
-            raise ValidationFailed(fields={"body": "required"})
-
         message = await self._get_readable_message(user, message_id)
         if message.author_id != user.user_id:
             raise PermissionDenied(ErrorCode.NOT_AUTHOR, "You can only edit your own messages")
         if message.deleted_at is not None:
             raise Conflict(ErrorCode.MESSAGE_DELETED, "The message was deleted")
+
+        if not data.body:  # empty only when the message has files (api-chat.md)
+            async with self._session.begin():
+                files = await self._messages.list_attachments([message.id])
+            if not files:
+                raise ValidationFailed(fields={"body": "required"})
 
         channel = await self._access.get_writable_channel(user, message.channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
@@ -354,6 +453,8 @@ class MessageService:
                 )
                 await self._reactions.delete_message_reactions(deleted.id)
                 await self._pins.delete_message_pin(deleted.id)
+                attachments = await self._messages.list_attachments([deleted.id])
+                file_ids = [row.file_id for row in attachments.get(deleted.id, [])]
 
                 payload = {
                     "message_id": str(deleted.id),
@@ -377,4 +478,6 @@ class MessageService:
                 payload=payload,
             )
         )
-        # TODO(CHAT-212): detach the message's files through chatty-core (D-03)
+
+        if file_ids:  # after the commit (D-03); the delete answers 204 even if this fails
+            await self._detach(file_ids, attempts=DETACH_ATTEMPTS)

@@ -22,7 +22,7 @@ from app.schemas.messages import EditMessageRequest, MessageResponse, SendMessag
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
-from tests.fakes import FakeBus, FakeCore, channel, memberships
+from tests.fakes import FakeBus, FakeCore, attached_file, channel, memberships
 
 pytestmark = pytest.mark.integration
 
@@ -57,6 +57,7 @@ def service(session: AsyncSession, room: CoreChannel, bus: FakeBus) -> MessageSe
         ReactionRepository(session),
         PinRepository(session),
         AccessService(cast(CoreClient, FakeCore(channel=room))),
+        cast(CoreClient, FakeCore()),
         cast(EventBus, bus),
     )
 
@@ -169,3 +170,32 @@ async def test_concurrent_deletes_write_one_event(sessions, room):
         "message.deleted",
     ]
     assert len(bus.published) == 1
+
+
+async def test_deleting_a_message_detaches_its_files(sessions, room):
+    report, chart = attached_file("report.pdf"), attached_file("chart.png", "image/png")
+    core = FakeCore(attachments=[report, chart])
+    data = SendMessageRequest(
+        client_msg_id=uuid.uuid4(), body="", file_ids=[report.file_id, chart.file_id]
+    )
+
+    def with_core(session: AsyncSession) -> MessageService:
+        return MessageService(
+            session,
+            MessageRepository(session),
+            ChannelCounterRepository(session),
+            ChannelEventRepository(session),
+            ReadStateRepository(session),
+            ReactionRepository(session),
+            PinRepository(session),
+            AccessService(cast(CoreClient, FakeCore(channel=room))),
+            cast(CoreClient, core),
+            cast(EventBus, FakeBus()),
+        )
+
+    async with sessions() as session:
+        message, _ = await with_core(session).send(USER, room.channel_id, data)
+    async with sessions() as session:
+        await with_core(session).delete(USER, message.id)
+
+    assert core.detach_calls == [[report.file_id, chart.file_id]]

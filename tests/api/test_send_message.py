@@ -3,8 +3,17 @@ import uuid
 import pytest
 
 from app.api.deps import get_core_client, get_message_service
+from app.core.exceptions import InvalidFile
 from app.schemas.core import CoreChannel
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    attached_file,
+    channel,
+    memberships,
+    saved_message,
+)
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 
@@ -13,8 +22,10 @@ def url(channel_id: uuid.UUID) -> str:
     return f"/api/chat/v1/channels/{channel_id}/messages"
 
 
-def use(app, room: CoreChannel | None, messages: FakeMessages | None = None) -> MessageFakes:
-    core = FakeCore(memberships=memberships(USER_ID), channel=room)
+def use(
+    app, room: CoreChannel | None, messages: FakeMessages | None = None, **core_options
+) -> MessageFakes:
+    core = FakeCore(memberships=memberships(USER_ID), channel=room, **core_options)
     fakes = MessageFakes(core, messages)
     app.dependency_overrides[get_core_client] = lambda: core
     app.dependency_overrides[get_message_service] = lambda: fakes.service
@@ -152,18 +163,60 @@ async def test_body_of_4000_chars_is_accepted(app, client, auth):
     assert response.status_code == 201
 
 
-async def test_files_are_400_invalid_file(app, client, auth):
+async def test_message_with_files_is_201_with_its_attachments(app, client, auth):
     room = channel(USER_ID)
-    use(app, room)
+    report = attached_file()
+    use(app, room, attachments=[report])
 
     response = await client.post(
         url(room.channel_id),
-        json={"client_msg_id": str(uuid.uuid4()), "file_ids": [str(uuid.uuid4())]},
+        json={"client_msg_id": str(uuid.uuid4()), "file_ids": [str(report.file_id)]},
+        headers=auth,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["file_ids"] == [str(report.file_id)]
+    assert body["attachments"] == [
+        {
+            "file_id": str(report.file_id),
+            "filename": "report.pdf",
+            "mime": "application/pdf",
+            "size": 482133,
+        }
+    ]
+
+
+async def test_refused_file_is_400_invalid_file_naming_it(app, client, auth):
+    room = channel(USER_ID)
+    file_id = uuid.uuid4()
+    use(app, room, attach_error=InvalidFile(str(file_id), "file_not_ready"))
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(uuid.uuid4()), "file_ids": [str(file_id)]},
         headers=auth,
     )
 
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == "invalid_file"
+    error = response.json()["error"]
+    assert error["code"] == "invalid_file"
+    assert str(file_id) in error["message"]
+
+
+async def test_the_same_file_twice_is_400(app, client, auth):
+    room = channel(USER_ID)
+    use(app, room)
+    file_id = str(uuid.uuid4())
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(uuid.uuid4()), "file_ids": [file_id, file_id]},
+        headers=auth,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["fields"] == {"file_ids": "invalid"}
 
 
 @pytest.mark.parametrize(

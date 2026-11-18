@@ -6,8 +6,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import MessageAlreadySent
-from app.models import Message
+from app.models import Attachment, Message
 from app.models.message import SEARCH_CONFIG
+from app.schemas.core import CoreAttachment
 
 HIGHLIGHT_START = "\x02"
 HIGHLIGHT_STOP = "\x03"
@@ -56,6 +57,26 @@ class MessageRepository:
         await self._session.refresh(message)
         return message
 
+    async def insert_attachments(
+        self, message_id: uuid.UUID, attachments: list[CoreAttachment]
+    ) -> list[Attachment]:
+        """One row per file, in the order of the list: position is the index (D-03)."""
+        rows = [
+            Attachment(
+                file_id=attachment.file_id,
+                message_id=message_id,
+                position=position,
+                object_key=attachment.object_key,
+                filename=attachment.filename,
+                mime=attachment.mime,
+                size=attachment.size,
+            )
+            for position, attachment in enumerate(attachments)
+        ]
+        self._session.add_all(rows)
+        await self._session.flush()
+        return rows
+
     async def update_message_body(
         self, message_id: uuid.UUID, body: str, mentions: list[uuid.UUID]
     ) -> Message | None:
@@ -97,6 +118,26 @@ class MessageRepository:
             .with_for_update(read=True)
         )
         return await self._session.scalar(stmt) is not None
+
+    async def list_attachments(
+        self, message_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[Attachment]]:
+        """
+        The files of the messages, each message's in the order they were sent.
+        One query for a whole page; messages without files are missing from the dict.
+        """
+        if not message_ids:
+            return {}
+
+        stmt = (
+            select(Attachment)
+            .where(Attachment.message_id.in_(message_ids))
+            .order_by(Attachment.message_id, Attachment.position)
+        )
+        result: dict[uuid.UUID, list[Attachment]] = {}
+        for attachment in await self._session.scalars(stmt):
+            result.setdefault(attachment.message_id, []).append(attachment)
+        return result
 
     async def list_messages_before(
         self, channel_id: uuid.UUID, before_seq: int | None, limit: int
