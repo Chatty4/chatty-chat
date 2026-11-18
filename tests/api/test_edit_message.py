@@ -6,7 +6,15 @@ import pytest
 from app.api.deps import get_core_client, get_message_service
 from app.models import Message
 from app.schemas.core import CoreChannel
-from tests.fakes import FakeCore, FakeMessages, MessageFakes, channel, memberships, saved_message
+from tests.fakes import (
+    FakeCore,
+    FakeMessages,
+    MessageFakes,
+    attached_file,
+    channel,
+    memberships,
+    saved_message,
+)
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 
@@ -52,7 +60,6 @@ async def test_edit_is_200_with_the_message_object(app, client, auth):
     ("data", "fields"),
     [
         ({}, {"body": "required"}),
-        ({"body": ""}, {"body": "required"}),
         ({"body": "x" * 4001}, {"body": "too_long"}),
     ],
 )
@@ -66,7 +73,34 @@ async def test_invalid_body_is_400(app, client, auth, data, fields):
     assert response.status_code == 400
     error = response.json()["error"]
     assert (error["code"], error["fields"]) == ("validation_error", fields)
-    assert fakes.log == []
+    assert fakes.log == []  # refused by the schema, before any read
+
+
+async def test_empty_body_on_a_message_without_files_is_400(app, client, auth):
+    room = channel(USER_ID)
+    message = message_in(room)
+    fakes = use(app, room, message)
+
+    response = await client.put(url(message.id), json={"body": ""}, headers=auth)
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert (error["code"], error["fields"]) == ("validation_error", {"body": "required"})
+    assert fakes.events.rows == []
+
+
+async def test_empty_body_on_a_message_with_files_is_200(app, client, auth):
+    room = channel(USER_ID)
+    message = message_in(room)
+    fakes = use(app, room, message)
+    report = attached_file()
+    await fakes.messages.insert_attachments(message.id, [report])
+
+    response = await client.put(url(message.id), json={"body": ""}, headers=auth)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert (data["body"], data["file_ids"]) == ("", [str(report.file_id)])
 
 
 async def test_someone_elses_message_is_403_not_author(app, client, auth):
