@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
-    BadRequest,
     Conflict,
+    InvalidFile,
     MessageAlreadySent,
     NotFound,
     PermissionDenied,
@@ -22,7 +22,7 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
-from app.schemas.core import Memberships
+from app.schemas.core import CoreAttachment, Memberships
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.messages import (
     AttachmentResponse,
@@ -156,6 +156,11 @@ class MessageService:
         if not data.body and not data.file_ids:
             raise ValidationFailed(fields={"body": "required"})
 
+        if len(set(data.file_ids)) != len(data.file_ids):
+            raise ValidationFailed(
+                message="a file is in file_ids twice", fields={"file_ids": "invalid"}
+            )
+
         # Before the access check: a retry returns the saved message even if the channel was
         # archived since. It is the sender's own message, so nothing new is revealed.
         async with self._session.begin():  # ends the read, so the write can begin() its own
@@ -166,14 +171,28 @@ class MessageService:
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
 
+        # Before the transaction, so none is held during the call to chatty-core (D-03).
+        attached: list[CoreAttachment] = []
+        if data.file_ids:
+            try:
+                attached = await self._core.attach(user.user_id, channel_id, data.file_ids)
+            except InvalidFile as exc:
+                if exc.reason != "file_already_attached":
+                    raise
+                # A concurent request with this client_msg_id may have attached them and saved.
+                async with self._session.begin():
+                    saved = await self._messages.get_by_client_msg_id(
+                        user.user_id, data.client_msg_id
+                    )
+                    if saved is None:
+                        raise
+                    return await self._retry(saved, user.user_id, channel_id), False
+
+            order = {file_id: index for index, file_id in enumerate(data.file_ids)}
+            attached.sort(key=lambda attachment: order[attachment.file_id])
+
         try:
             async with self._session.begin():
-                # TODO(CHAT-212): attach the files through chatty-core before saving (D-03)
-                if data.file_ids:
-                    raise BadRequest(
-                        ErrorCode.INVALID_FILE, "File attachments are not available yet"
-                    )
-
                 seq = await self._counters.next_seq(channel_id)
                 message = await self._messages.insert_message(
                     channel_id=channel_id,
@@ -183,7 +202,8 @@ class MessageService:
                     body=data.body,
                     mentions=mentions,
                 )
-                response = to_message_response(message)
+                files = await self._messages.insert_attachments(message.id, attached)
+                response = to_message_response(message, attachments=files)
                 payload = {"message": response.model_dump(mode="json")}
 
                 await self._events.insert_channel_event(
