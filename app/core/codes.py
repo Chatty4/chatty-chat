@@ -24,7 +24,6 @@ class ErrorCode(StrEnum):
     # 404
     CHANNEL_NOT_FOUND = "channel_not_found"
     MESSAGE_NOT_FOUND = "message_not_found"
-    ATTACHMENT_NOT_FOUND = "attachment_not_found"
 
     # 409
     CHANNEL_ARCHIVED = "channel_archived"

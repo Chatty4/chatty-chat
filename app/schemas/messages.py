@@ -32,6 +32,17 @@ class AttachmentResponse(BaseModel):
     size: int
 
 
+class AttachmentUrlResponse(AttachmentResponse):
+    """A file of a message with a short-lived download URL (D-02). Never log the URL."""
+
+    url: str
+    expires_at: datetime
+
+
+class AttachmentUrlsResponse(BaseModel):
+    attachments: list[AttachmentUrlResponse]
+
+
 class ReactionResponse(BaseModel):
     emoji: str
     count: int

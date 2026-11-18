@@ -9,10 +9,13 @@ jobs:
   ci:
     uses: Chatty4/.github/.github/workflows/python-ci.yml@dev
     with:
-      # Integration tests (tests/integration) need all three, see CLAUDE.md.
+      # Integration tests (tests/integration) need all four, see CLAUDE.md.
       needs-postgres: true
       needs-redis: true
       needs-kafka: true
+      # Attachment downloads are signed for MinIO and fetched from it (D-02); the step exports
+      # MINIO_PUBLIC_URL, MINIO_ACCESS_KEY, MINIO_SECRET_KEY and MINIO_BUCKET.
+      needs-minio: true
       database-url-scheme: postgresql+asyncpg
       test-env: |
         CORE_SERVICE_TOKEN=ci-not-secret

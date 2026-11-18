@@ -5,6 +5,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.clients import storage
 from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
@@ -29,6 +30,8 @@ from app.schemas.core import CoreAttachment, Memberships
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.messages import (
     AttachmentResponse,
+    AttachmentUrlResponse,
+    AttachmentUrlsResponse,
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
@@ -129,6 +132,21 @@ def to_message_response(
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
         created_at=message.created_at,
+    )
+
+
+def to_attachment_url(attachment: Attachment) -> AttachmentUrlResponse:
+    """The file with a download URL signed now, valid 5 minutes (D-02, D-16)."""
+    url, expires_at = storage.presign_attachment(
+        attachment.object_key, attachment.filename, attachment.mime
+    )
+    return AttachmentUrlResponse(
+        file_id=attachment.file_id,
+        filename=attachment.filename,
+        mime=attachment.mime,
+        size=attachment.size,
+        url=url,
+        expires_at=expires_at,
     )
 
 
@@ -481,3 +499,19 @@ class MessageService:
 
         if file_ids:  # after the commit (D-03); the delete answers 204 even if this fails
             await self._detach(file_ids, attempts=DETACH_ATTEMPTS)
+
+    async def attachment_urls(
+        self, user: Memberships, message_id: uuid.UUID
+    ) -> AttachmentUrlsResponse:
+        """
+        Download URLs for the files of a message, in the order they were sent (D-02).
+        404 if it doesn't exist, the user can't read it's channel, or it was deleted.
+        """
+        message = await self._get_readable_message(user, message_id)
+        if message.deleted_at is not None:
+            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
+
+        async with self._session.begin():
+            attachments = await self._messages.list_attachments([message_id])
+        files = attachments.get(message.id, [])
+        return AttachmentUrlsResponse(attachments=[to_attachment_url(file) for file in files])

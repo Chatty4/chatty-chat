@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
     KAFKA_TOPIC: str = "chat.events"
 
+    # MinIO, to sign attachment downloads with chatty-chat's read-only key (D-02, D-16).
+    MINIO_PUBLIC_URL: str = "http://127.0.0.1:9000"
+    MINIO_ACCESS_KEY: str = "chatty-chat"
+    MINIO_SECRET_KEY: SecretStr = SecretStr("")
+    MINIO_BUCKET: str = "chatty"
+
     # Web Push (D-13). Only the push worker uses them; it won't start without the key.
     VAPID_PRIVATE_KEY: SecretStr = SecretStr("")
     VAPID_SUBJECT: str = "mailto:dev@chatty.local"
