@@ -146,16 +146,21 @@ class PinService:
 
         async with self._session.begin():
             rows = await self._pins.list_pins(channel_id)
-            reactions = await self._reactions.list_reactions(
-                [message.id for _, message in rows], user.user_id
-            )
+            message_ids = [message.id for _, message in rows]
+            reactions = await self._reactions.list_reactions(message_ids, user.user_id)
+            attachments = await self._messages.list_attachments(message_ids)
 
         return PinsResponse(
             pins=[
                 PinnedMessage(
                     pinned_by=pin.pinned_by,
                     pinned_at=pin.pinned_at,
-                    message=to_message_response(message, reactions.get(message.id), pinned=True),
+                    message=to_message_response(
+                        message,
+                        reactions.get(message.id),
+                        pinned=True,
+                        attachments=attachments.get(message.id),
+                    ),
                 )
                 for pin, message in rows
             ]

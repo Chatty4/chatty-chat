@@ -12,7 +12,7 @@ from app.core.exceptions import (
     PermissionDenied,
     ValidationFailed,
 )
-from app.models import Message
+from app.models import Attachment, Message
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -24,6 +24,7 @@ from app.repositories import (
 from app.schemas.core import Memberships
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.messages import (
+    AttachmentResponse,
     EditMessageRequest,
     MessageHistoryResponse,
     MessageResponse,
@@ -86,12 +87,16 @@ def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionRes
 
 
 def to_message_response(
-    message: Message, reactions: list[tuple[str, int, bool]] | None = None, pinned: bool = False
+    message: Message,
+    reactions: list[tuple[str, int, bool]] | None = None,
+    pinned: bool = False,
+    attachments: list[Attachment] | None = None,
 ) -> MessageResponse:
     """
-    The message object. Files come with CHAT-212, pins with CHAT-204. A deleted message has no
-    reactions (api-chat.md), even if rows from before the delete are still there.
+    The message object. A deleted message has no files and no reactions (api-chat.md), even if
+    rows from before the delete are still there. Attachments come ordered by position.
     """
+    files = [] if message.deleted_at else attachments or []
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -99,8 +104,16 @@ def to_message_response(
         author_id=message.author_id,
         client_msg_id=message.client_msg_id,
         body=message.body,
-        file_ids=[],
-        attachments=[],
+        file_ids=[attachment.file_id for attachment in files],
+        attachments=[
+            AttachmentResponse(
+                file_id=attachment.file_id,
+                filename=attachment.filename,
+                mime=attachment.mime,
+                size=attachment.size,
+            )
+            for attachment in files
+        ],
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
@@ -251,9 +264,15 @@ class MessageService:
             reactions = await self._reactions.list_reactions(message_ids, user.user_id)
             pinned = await self._pins.pinned_message_ids(message_ids)
 
+            attachments = await self._messages.list_attachments(message_ids)
         return MessageHistoryResponse(
             messages=[
-                to_message_response(message, reactions.get(message.id), message.id in pinned)
+                to_message_response(
+                    message,
+                    reactions.get(message.id),
+                    message.id in pinned,
+                    attachments.get(message.id),
+                )
                 for message in page
             ],
             has_more=has_more,
@@ -276,10 +295,13 @@ class MessageService:
         return await self._full_response(existing, user_id)
 
     async def _full_response(self, message: Message, user_id: uuid.UUID) -> MessageResponse:
-        """The message object with its reactions and pin. Call inside a transaction."""
+        """The message object with its reactions, pin and files. Call inside a transaction."""
         reactions = await self._reactions.list_reactions([message.id], user_id)
         pinned = await self._pins.pinned_message_ids([message.id])
-        return to_message_response(message, reactions.get(message.id), message.id in pinned)
+        attachments = await self._messages.list_attachments([message.id])
+        return to_message_response(
+            message, reactions.get(message.id), message.id in pinned, attachments.get(message.id)
+        )
 
     async def edit(
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
