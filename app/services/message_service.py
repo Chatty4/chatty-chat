@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import uuid
@@ -38,7 +39,11 @@ from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
+
 MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
+
+DETACH_ATTEMPTS = 3  # after a message is deleted: the first call and two retries
+DETACH_RETRY_SECONDS = 0.2  # times the attempt number: 0.2 s, then 0.4 s
 
 
 class _DeletedMeanwhile(Exception):
@@ -267,12 +272,17 @@ class MessageService:
         if unused:
             await self._detach(unused)
 
-    async def _detach(self, file_ids: list[uuid.UUID]) -> None:
-        """Best effort: if it fails, the files stay attached to no message (D-03)."""
-        try:
-            await self._core.detach(file_ids)
-        except AppError:
-            logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
+    async def _detach(self, file_ids: list[uuid.UUID], attempts: int = 1) -> None:
+        """Best effort, tried `attempts` times: if it keeps failing, the files stay attached
+        to no message."""
+        for attempt in range(1, attempts + 1):
+            try:
+                await self._core.detach(file_ids)
+                return
+            except AppError:
+                if attempt < attempts:
+                    await asyncio.sleep(DETACH_RETRY_SECONDS * attempt)
+        logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
 
     async def list_history(
         self,
@@ -441,6 +451,8 @@ class MessageService:
                 )
                 await self._reactions.delete_message_reactions(deleted.id)
                 await self._pins.delete_message_pin(deleted.id)
+                attachments = await self._messages.list_attachments([deleted.id])
+                file_ids = [row.file_id for row in attachments.get(deleted.id, [])]
 
                 payload = {
                     "message_id": str(deleted.id),
@@ -464,4 +476,6 @@ class MessageService:
                 payload=payload,
             )
         )
-        # TODO(CHAT-212): detach the message's files through chatty-core (D-03)
+
+        if file_ids:  # after the commit (D-03); the delete answers 204 even if this fails
+            await self._detach(file_ids, attempts=DETACH_ATTEMPTS)
