@@ -3,12 +3,20 @@ import uuid
 import pytest
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import AppError, MessageAlreadySent, ValidationFailed
+from app.core.exceptions import (
+    AppError,
+    Conflict,
+    InvalidFile,
+    MessageAlreadySent,
+    ServiceUnavailable,
+    ValidationFailed,
+)
 from app.schemas.messages import ReactionResponse, SendMessageRequest
 from tests.fakes import (
     FakeCore,
     FakeMessages,
     MessageFakes,
+    attached_file,
     channel,
     memberships,
     saved_message,
@@ -170,19 +178,6 @@ async def test_empty_body_without_files_is_refused_before_access():
     assert fakes.log == []
 
 
-async def test_files_are_refused_until_attachments_exist():
-    room = channel(USER_ID)
-    fakes = MessageFakes(FakeCore(channel=room))
-
-    with pytest.raises(AppError) as error:
-        await fakes.service.send(USER, room.channel_id, request(file_ids=[uuid.uuid4()]))
-
-    assert (error.value.status_code, error.value.code) == (400, ErrorCode.INVALID_FILE)
-    assert fakes.counters.last_seq == 0
-    assert fakes.log == ["commit", "rollback"]
-    assert fakes.bus.published == []
-
-
 @pytest.mark.parametrize(
     ("room", "status", "code"),
     [
@@ -201,3 +196,136 @@ async def test_user_who_cannot_write_changes_nothing(room, status, code):
     assert (error.value.status_code, error.value.code) == (status, code)
     assert fakes.log == ["commit"]  # only the retry lookup
     assert fakes.counters.last_seq == 0
+
+
+# --- files (D-03) ---
+
+
+def files_core(room, *files, **errors) -> FakeCore:
+    return FakeCore(channel=room, attachments=list(files), **errors)
+
+
+async def test_files_are_attached_before_the_write_and_returned_in_the_sent_order():
+    room = channel(USER_ID)
+    report, chart = attached_file("report.pdf"), attached_file("chart.png", "image/png")
+    core = files_core(room, chart, report)  # chatty-core may answer in another order
+    fakes = MessageFakes(core)
+    data = request(file_ids=[report.file_id, chart.file_id])
+
+    message, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert created
+    assert core.attach_calls == [(USER_ID, room.channel_id, [report.file_id, chart.file_id])]
+    assert message.file_ids == [report.file_id, chart.file_id]
+    assert [item.filename for item in message.attachments] == ["report.pdf", "chart.png"]
+    stored = fakes.messages.attachments[message.id]
+    assert [(row.file_id, row.position) for row in stored] == [
+        (report.file_id, 0),
+        (chart.file_id, 1),
+    ]
+    payload = {"message": message.model_dump(mode="json")}
+    assert fakes.events.rows == [(room.channel_id, 1, "message.created", payload)]
+    assert "object_key" not in str(payload)
+
+
+async def test_a_message_without_files_doesnt_call_attach():
+    room = channel(USER_ID)
+    core = files_core(room)
+    fakes = MessageFakes(core)
+
+    await fakes.service.send(USER, room.channel_id, request())
+
+    assert core.attach_calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        InvalidFile("f6", "file_not_ready"),
+        Conflict(ErrorCode.CHANNEL_ARCHIVED, "The channel's team was deleted"),
+        ServiceUnavailable(),
+    ],
+    ids=["invalid_file", "channel_archived", "core_unavailable"],
+)
+async def test_attach_error_saves_nothing(error):
+    room = channel(USER_ID)
+    core = files_core(room, attach_error=error)
+    fakes = MessageFakes(core)
+
+    with pytest.raises(AppError) as raised:
+        await fakes.service.send(USER, room.channel_id, request(file_ids=[uuid.uuid4()]))
+
+    assert raised.value is error
+    assert fakes.log == ["commit"]  # only the retry lookup: attach runs outside a transaction
+    assert fakes.messages.inserted == []
+    assert fakes.bus.published == []
+    assert core.detach_calls == []  # nothing was attached, nothing to undo
+
+
+async def test_the_same_file_twice_is_refused_before_chatty_core():
+    room = channel(USER_ID)
+    core = files_core(room)
+    fakes = MessageFakes(core)
+    file_id = uuid.uuid4()
+
+    with pytest.raises(ValidationFailed) as error:
+        await fakes.service.send(USER, room.channel_id, request(file_ids=[file_id, file_id]))
+
+    assert error.value.fields == {"file_ids": "invalid"}
+    assert core.attach_calls == []
+    assert fakes.log == []
+
+
+async def test_retry_returns_the_original_with_its_files_without_attaching():
+    room = channel(USER_ID)
+    report = attached_file()
+    data = request(file_ids=[report.file_id])
+    original = saved_message(room.channel_id, USER_ID, data.client_msg_id, seq=3)
+    core = files_core(room)
+    fakes = MessageFakes(core, FakeMessages(existing=original))
+    await fakes.messages.insert_attachments(original.id, [report])
+
+    message, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert not created
+    assert message.file_ids == [report.file_id]
+    assert core.attach_calls == []
+
+
+class CoreSavedMeanwhile(FakeCore):
+    """attach answers file_already_attached because a concurrent request with the same
+    client_msg_id attached the files and saved `saved` first."""
+
+    def __init__(self, room, messages: FakeMessages, saved) -> None:
+        super().__init__(channel=room)
+        self._messages = messages
+        self._saved = saved
+
+    async def attach(self, user_id, channel_id, file_ids):
+        self._messages.existing = self._saved
+        raise InvalidFile(str(file_ids[0]), "file_already_attached")
+
+
+async def test_already_attached_by_a_concurrent_retry_returns_its_message():
+    room = channel(USER_ID)
+    data = request(file_ids=[uuid.uuid4()])
+    saved = saved_message(room.channel_id, USER_ID, data.client_msg_id, seq=5)
+    messages = FakeMessages()
+    fakes = MessageFakes(CoreSavedMeanwhile(room, messages, saved), messages)
+
+    message, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert not created
+    assert message.id == saved.id
+    assert fakes.messages.inserted == []
+
+
+async def test_already_attached_elsewhere_is_invalid_file():
+    room = channel(USER_ID)
+    error = InvalidFile("f6", "file_already_attached")
+    fakes = MessageFakes(files_core(room, attach_error=error))
+
+    with pytest.raises(InvalidFile):
+        await fakes.service.send(USER, room.channel_id, request(file_ids=[uuid.uuid4()]))
+
+    assert fakes.messages.inserted == []

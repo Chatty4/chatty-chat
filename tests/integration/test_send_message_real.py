@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.clients.core import CoreClient
 from app.core.config import get_settings
-from app.models import ChannelCounter, ChannelEvent, Message, ReadState
+from app.models import Attachment, ChannelCounter, ChannelEvent, Message, ReadState
 from app.repositories import (
     ChannelCounterRepository,
     ChannelEventRepository,
@@ -22,7 +22,7 @@ from app.schemas.messages import SendMessageRequest
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import MessageService
-from tests.fakes import FakeBus, FakeCore, channel, memberships
+from tests.fakes import FakeBus, FakeCore, attached_file, channel, memberships
 
 pytestmark = pytest.mark.integration
 
@@ -157,3 +157,44 @@ async def test_read_position_only_moves_forward(sessions, room):
             )
         )
     assert last_read == 5
+
+
+async def test_files_are_stored_in_the_sent_order(sessions, room):
+    report, chart = attached_file("report.pdf"), attached_file("chart.png", "image/png")
+    data = SendMessageRequest(
+        client_msg_id=uuid.uuid4(), body="", file_ids=[report.file_id, chart.file_id]
+    )
+
+    async with sessions() as session:
+        service = MessageService(
+            session,
+            MessageRepository(session),
+            ChannelCounterRepository(session),
+            ChannelEventRepository(session),
+            ReadStateRepository(session),
+            ReactionRepository(session),
+            PinRepository(session),
+            AccessService(cast(CoreClient, FakeCore(channel=room))),
+            cast(CoreClient, FakeCore(attachments=[chart, report])),
+            cast(EventBus, FakeBus()),
+        )
+        message, _ = await service.send(USER, room.channel_id, data)
+
+    assert message.file_ids == [report.file_id, chart.file_id]
+    async with sessions() as session:
+        rows = (
+            await session.scalars(
+                select(Attachment)
+                .where(Attachment.message_id == message.id)
+                .order_by(Attachment.position)
+            )
+        ).all()
+        payload = await session.scalar(
+            select(ChannelEvent.payload).where(ChannelEvent.channel_id == room.channel_id)
+        )
+    assert [(row.file_id, row.position, row.object_key) for row in rows] == [
+        (report.file_id, 0, report.object_key),
+        (chart.file_id, 1, chart.object_key),
+    ]
+    assert payload["message"]["file_ids"] == [str(report.file_id), str(chart.file_id)]
+    assert "object_key" not in str(payload)
