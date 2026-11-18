@@ -382,15 +382,17 @@ class MessageService:
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
     ) -> MessageResponse:
         """Edit the body of my message. Takes the next seq and sends message.edited."""
-        # TODO(CHAT-212): empty is allowed when the message has files
-        if not data.body:
-            raise ValidationFailed(fields={"body": "required"})
-
         message = await self._get_readable_message(user, message_id)
         if message.author_id != user.user_id:
             raise PermissionDenied(ErrorCode.NOT_AUTHOR, "You can only edit your own messages")
         if message.deleted_at is not None:
             raise Conflict(ErrorCode.MESSAGE_DELETED, "The message was deleted")
+
+        if not data.body:  # empty only when the message has files (api-chat.md)
+            async with self._session.begin():
+                files = await self._messages.list_attachments([message.id])
+            if not files:
+                raise ValidationFailed(fields={"body": "required"})
 
         channel = await self._access.get_writable_channel(user, message.channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
