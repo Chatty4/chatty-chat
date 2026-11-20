@@ -672,7 +672,7 @@ class FakeOutbox:
         self.rows = rows
         self.published: list[int] = []
 
-    async def lock_unpublished(self, limit: int) -> list[ChannelEvent]:
+    async def list_unpublished(self, limit: int) -> list[ChannelEvent]:
         return [row for row in self.rows if row.id not in self.published][:limit]
 
     async def mark_published(self, ids: list[int]) -> None:

@@ -33,7 +33,7 @@ async def publish(outbox: FakeOutbox, producer: FakeProducer, log: list[str]) ->
     )
 
 
-async def test_sends_in_id_order_keyed_by_channel_then_commits():
+async def test_sends_in_id_order_keyed_by_channel_then_marks_them():
     a, b = uuid.uuid4(), uuid.uuid4()
     outbox = FakeOutbox([row(1, a, 1), row(2, b, 1), row(3, a, 2)])
     producer, log = FakeProducer(), []
@@ -42,17 +42,26 @@ async def test_sends_in_id_order_keyed_by_channel_then_commits():
 
     assert [(key, event.seq) for _, key, event in producer.sent] == [(a, 1), (b, 1), (a, 2)]
     assert outbox.published == [1, 2, 3]
-    assert log == ["commit"]
+    assert log == ["commit", "commit"]  # the read, then the mark
 
 
-async def test_a_kafka_error_rolls_back_and_marks_nothing():
+async def test_a_kafka_error_marks_nothing():
     outbox, log = FakeOutbox([row(1, uuid.uuid4(), 1)]), []
 
     with pytest.raises(KafkaTimeoutError):
         await publish(outbox, FakeProducer(error=KafkaTimeoutError()), log)
 
     assert outbox.published == []
-    assert log == ["rollback"]
+    assert log == ["commit"]  # only the read; no transaction is open while it sends
+
+
+async def test_an_empty_outbox_sends_nothing():
+    producer, log = FakeProducer(), []
+
+    assert await publish(FakeOutbox([]), producer, log) == 0
+
+    assert producer.sent == []
+    assert log == ["commit"]  # the read only
 
 
 async def test_sends_at_most_one_batch():

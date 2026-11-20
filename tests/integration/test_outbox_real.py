@@ -71,9 +71,9 @@ async def wait(event: asyncio.Event, seconds: float) -> bool:
 
 
 async def unpublished(sessions) -> list[tuple[uuid.UUID, int]]:
-    """What lock_unpublished returns, as (channel_id, seq)."""
+    """What list_unpublished returns, as (channel_id, seq)."""
     async with sessions.begin() as session:
-        rows = await ChannelEventRepository(session).lock_unpublished(limit=100)
+        rows = await ChannelEventRepository(session).list_unpublished(limit=100)
     return [(row.channel_id, row.seq) for row in rows]
 
 
