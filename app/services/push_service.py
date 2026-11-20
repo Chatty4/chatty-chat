@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.core import CoreClient
 from app.clients.presence import PresenceStore
 from app.clients.web_push import PushDedupe, WebPushClient
-from app.repositories import PushSubscriptionRepository
+from app.repositories import MessageRepository, PushSubscriptionRepository
 from app.schemas.core import CoreChannel, NotifyLevel
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.push import PushMessage, PushNotification
@@ -43,6 +43,7 @@ class PushService:
         self,
         session: AsyncSession,
         subscriptions: PushSubscriptionRepository,
+        messages: MessageRepository,
         core: CoreClient,
         presence: PresenceStore,
         dedupe: PushDedupe,
@@ -50,6 +51,7 @@ class PushService:
     ) -> None:
         self._session = session
         self._subscriptions = subscriptions
+        self._messages = messages
         self._core = core
         self._presence = presence
         self._dedupe = dedupe
@@ -87,6 +89,8 @@ class PushService:
             return
 
         async with self._session.begin():
+            if await self._messages.is_deleted(message.id):
+                return
             rows = await self._subscriptions.list_for_users(users)
         by_user = defaultdict(list)
         for row in rows:

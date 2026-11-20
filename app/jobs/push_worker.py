@@ -14,7 +14,7 @@ from app.clients.web_push import PushDedupe, WebPushClient
 from app.core.config import get_settings
 from app.core.exceptions import ServiceUnavailable
 from app.core.logging import setup_logging
-from app.repositories import PushSubscriptionRepository
+from app.repositories import MessageRepository, PushSubscriptionRepository
 from app.schemas.events import ChannelEvent
 from app.services.push_service import PushService
 
@@ -59,6 +59,7 @@ async def main() -> None:
             service = PushService(
                 session,
                 PushSubscriptionRepository(session),
+                MessageRepository(session),
                 CoreClient(core_http, redis),
                 PresenceStore(redis),
                 PushDedupe(redis),

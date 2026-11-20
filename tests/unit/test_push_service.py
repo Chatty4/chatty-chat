@@ -11,7 +11,7 @@ from app.clients.presence import PresenceStore
 from app.clients.web_push import PushDedupe, WebPushClient
 from app.core.exceptions import ServiceUnavailable
 from app.models import PushSubscription
-from app.repositories import PushSubscriptionRepository
+from app.repositories import MessageRepository, PushSubscriptionRepository
 from app.schemas.core import CoreChannel
 from app.schemas.events import ChannelEvent
 from app.services.push_service import PREVIEW_CHARS, PushService, push_recipients
@@ -82,6 +82,16 @@ def created(
     )
 
 
+class FakeMessages:
+    """Stands in for MessageRepository: is_deleted answers `deleted` for every message."""
+
+    def __init__(self, deleted: bool) -> None:
+        self._deleted = deleted
+
+    async def is_deleted(self, message_id: uuid.UUID) -> bool:
+        return self._deleted
+
+
 class Fakes:
     def __init__(
         self,
@@ -90,6 +100,7 @@ class Fakes:
         gone: tuple[str, ...] = (),
         core_error: Exception | None = None,
         active: bool = True,
+        deleted: bool = False,
     ) -> None:
         self.presence = FakePresence()
         self.subscriptions = FakeSubscriptions(*rows)
@@ -98,6 +109,7 @@ class Fakes:
         self.service = PushService(
             cast(AsyncSession, FakeSession(self.log)),
             cast(PushSubscriptionRepository, self.subscriptions),
+            cast(MessageRepository, FakeMessages(deleted)),
             # FakeCore gives every user these memberships; the service only reads is_active
             cast(
                 CoreClient,
@@ -207,6 +219,16 @@ async def test_skips_users_with_a_tab_on_screen():
     await fakes.service.handle(created(channel))
 
     assert fakes.pushed == [BOB]
+
+
+async def test_a_message_deleted_before_the_push_is_not_sent():
+    channel = member_channel((ANA, "all", False))
+    fakes = Fakes(channel, subscription(ANA), deleted=True)
+
+    await fakes.service.handle(created(channel))
+
+    assert fakes.sender.sent == []
+    assert fakes.log == ["commit"]  # only the check, no delete of gone browsers
 
 
 async def test_deactivated_users_are_skipped():
