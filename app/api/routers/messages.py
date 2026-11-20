@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import CurrentUser, MessageServiceDep
+from app.api.rate_limits import LIMIT_DELETE, LIMIT_EDIT, LIMIT_HISTORY, LIMIT_SEND
 from app.schemas.messages import (
     AttachmentUrlsResponse,
     EditMessageRequest,
@@ -19,6 +20,7 @@ router = APIRouter()
     "/channels/{channel_id}/messages",
     response_model=MessageResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[LIMIT_SEND],
 )
 async def send_message(
     channel_id: uuid.UUID,
@@ -33,7 +35,11 @@ async def send_message(
     return message
 
 
-@router.get("/channels/{channel_id}/messages", response_model=MessageHistoryResponse)
+@router.get(
+    "/channels/{channel_id}/messages",
+    response_model=MessageHistoryResponse,
+    dependencies=[LIMIT_HISTORY],
+)
 async def list_messages(
     channel_id: uuid.UUID,
     user: CurrentUser,
@@ -48,7 +54,7 @@ async def list_messages(
     )
 
 
-@router.put("/messages/{message_id}", response_model=MessageResponse)
+@router.put("/messages/{message_id}", response_model=MessageResponse, dependencies=[LIMIT_EDIT])
 async def edit_message(
     message_id: uuid.UUID,
     data: EditMessageRequest,
@@ -58,7 +64,9 @@ async def edit_message(
     return await service.edit(user, message_id, data)
 
 
-@router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[LIMIT_DELETE]
+)
 async def delete_message(
     message_id: uuid.UUID,
     user: CurrentUser,

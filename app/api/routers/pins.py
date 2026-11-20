@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Response, status
 
 from app.api.deps import CurrentUser, PinServiceDep
+from app.api.rate_limits import LIMIT_PINS
 from app.schemas.pins import PinResponse, PinsResponse
 
 router = APIRouter()
@@ -12,6 +13,7 @@ router = APIRouter()
     "/channels/{channel_id}/pins/{message_id}",
     response_model=PinResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[LIMIT_PINS],
 )
 async def pin_message(
     channel_id: uuid.UUID,
@@ -26,7 +28,11 @@ async def pin_message(
     return pin
 
 
-@router.delete("/channels/{channel_id}/pins/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/channels/{channel_id}/pins/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[LIMIT_PINS],
+)
 async def unpin_message(
     channel_id: uuid.UUID, message_id: uuid.UUID, user: CurrentUser, service: PinServiceDep
 ) -> None:

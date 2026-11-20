@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.core import CoreClient
 from app.clients.presence import PresenceStore
+from app.clients.rate_limiter import RateLimiter
 from app.core.exceptions import Unauthorized
 from app.core.security import decode_access_token
 from app.db.session import get_session
@@ -77,6 +78,13 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[Memberships, Depends(get_current_user)]
+
+
+def get_rate_limiter(redis: RedisDep) -> RateLimiter:
+    return RateLimiter(redis)
+
+
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
 
 
 def get_event_bus(redis: RedisDep) -> EventBus:

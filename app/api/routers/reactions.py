@@ -3,12 +3,17 @@ import uuid
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, ReactionServiceDep
+from app.api.rate_limits import LIMIT_REACTIONS
 from app.schemas.messages import Emoji, ReactionsResponse
 
 router = APIRouter()
 
 
-@router.put("/messages/{message_id}/reactions/{emoji}", response_model=ReactionsResponse)
+@router.put(
+    "/messages/{message_id}/reactions/{emoji}",
+    response_model=ReactionsResponse,
+    dependencies=[LIMIT_REACTIONS],
+)
 async def add_reaction(
     message_id: uuid.UUID,
     emoji: Emoji,
@@ -18,7 +23,11 @@ async def add_reaction(
     return await service.add(user, message_id, emoji)
 
 
-@router.delete("/messages/{message_id}/reactions/{emoji}", response_model=ReactionsResponse)
+@router.delete(
+    "/messages/{message_id}/reactions/{emoji}",
+    response_model=ReactionsResponse,
+    dependencies=[LIMIT_REACTIONS],
+)
 async def remove_reaction(
     message_id: uuid.UUID,
     emoji: Emoji,
