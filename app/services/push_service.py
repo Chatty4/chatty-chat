@@ -74,11 +74,15 @@ class PushService:
         if channel is None:  # deleted since
             return
         mentions = set(message.mentions)
-        users = [
-            user_id
-            for user_id in push_recipients(message.author_id, mentions, channel)
-            if not await self._presence.is_looking(user_id)
-        ]
+        users = []
+        for user_id in push_recipients(message.author_id, mentions, channel):
+            memberships = await self._core.get_memberships(user_id)
+            if memberships is None or not memberships.is_active:
+                continue
+            if await self._presence.is_looking(user_id):
+                continue
+            users.append(user_id)
+
         if not users:
             return
 

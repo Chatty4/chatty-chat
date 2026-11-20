@@ -2,10 +2,12 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from fnmatch import fnmatch
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clients.core import ALL_VERSION, CHANNEL_KEYS, channel_key, members_key, version_key
 from app.clients.core_events import clear_cache, delete_matching, handle_event
@@ -84,6 +86,38 @@ class FakePipeline:
             await getattr(self._redis, name)(*args)
 
 
+class FakeDb:
+    """
+    Stands in for async_sessionmaker and the session it opens: `statements` are what was executed.
+    With `error`, execute raises it, as if Postgres were down.
+    """
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.statements: list[Any] = []
+        self._error = error
+
+    def __call__(self) -> FakeDb:
+        return self
+
+    def begin(self) -> FakeDb:
+        return self
+
+    async def __aenter__(self) -> FakeDb:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, statement: Any) -> None:
+        if self._error:
+            raise self._error
+        self.statements.append(statement)
+
+    @property
+    def as_factory(self) -> async_sessionmaker[AsyncSession]:
+        return cast(async_sessionmaker[AsyncSession], self)
+
+
 def event(event_type: str, data: dict) -> str:
     envelope = {"type": event_type, "occurred_at": "2026-10-22T12:00:00Z", "data": data}
     return json.dumps(envelope, default=str)
@@ -118,7 +152,7 @@ USER_DEACTIVATED = ("user.deactivated", {"user_id": USER_ID})
 async def test_event_deletes_exactly_its_keys(event_type, data, deleted):
     redis = FakeRedis(*CACHED)
 
-    await handle_event(redis.as_redis, event(event_type, data))
+    await handle_event(redis.as_redis, FakeDb().as_factory, event(event_type, data))
 
     assert set(redis.data) == CACHED - deleted
 
@@ -139,7 +173,7 @@ async def test_event_deletes_exactly_its_keys(event_type, data, deleted):
 async def test_event_bumps_exactly_its_versions(event_type, data, bumped):
     redis = FakeRedis(*CACHED)
 
-    await handle_event(redis.as_redis, event(event_type, data))
+    await handle_event(redis.as_redis, FakeDb().as_factory, event(event_type, data))
 
     assert redis.versions == dict.fromkeys(bumped, 1)
 
@@ -147,9 +181,39 @@ async def test_event_bumps_exactly_its_versions(event_type, data, bumped):
 async def test_version_is_bumped_before_the_key_is_deleted():
     redis = FakeRedis(*CACHED)
 
-    await handle_event(redis.as_redis, event(*USER_DEACTIVATED))
+    await handle_event(redis.as_redis, FakeDb().as_factory, event(*USER_DEACTIVATED))
 
     assert redis.log == ["incr", "delete"]
+
+
+async def test_user_deactivated_deletes_the_users_push_subscriptions():
+    db = FakeDb()
+
+    await handle_event(FakeRedis(*CACHED).as_redis, db.as_factory, event(*USER_DEACTIVATED))
+
+    [statement] = db.statements
+    assert statement.is_delete
+    assert statement.table.name == "push_subscriptions"
+    assert list(statement.compile().params.values()) == [USER_ID]
+
+
+@pytest.mark.parametrize("event_args", [MEMBERSHIP_CHANGED, TEAM_MEMBER_CHANGED, CHANNEL_UPDATED])
+async def test_other_events_keep_push_subscriptions(event_args):
+    db = FakeDb()
+
+    await handle_event(FakeRedis(*CACHED).as_redis, db.as_factory, event(*event_args))
+
+    assert db.statements == []
+
+
+@pytest.mark.parametrize("error", [OperationalError("", {}, Exception()), ConnectionRefusedError()])
+async def test_database_down_is_logged_and_the_cache_still_cleared(error, caplog):
+    redis = FakeRedis(*CACHED)
+
+    await handle_event(redis.as_redis, FakeDb(error).as_factory, event(*USER_DEACTIVATED))
+
+    assert members_key(USER_ID) not in redis.data
+    assert "Could not delete push subscriptions" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -164,7 +228,7 @@ async def test_version_is_bumped_before_the_key_is_deleted():
 async def test_unknown_or_malformed_event_is_logged_and_ignored(raw, caplog):
     redis = FakeRedis(*CACHED)
 
-    await handle_event(redis.as_redis, raw)
+    await handle_event(redis.as_redis, FakeDb().as_factory, raw)
 
     assert set(redis.data) == CACHED
     assert redis.versions == {}

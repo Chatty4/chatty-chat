@@ -69,3 +69,9 @@ class PushSubscriptionRepository:
         await self._session.execute(
             delete(PushSubscription).where(PushSubscription.endpoint == endpoint)
         )
+
+    async def delete_for_user(self, user_id: uuid.UUID) -> None:
+        """Delete all subscriptions for a user"""
+        await self._session.execute(
+            delete(PushSubscription).where(PushSubscription.user_id == user_id)
+        )

@@ -4,6 +4,8 @@ import logging
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clients.core import (
     ALL_VERSION,
@@ -14,6 +16,7 @@ from app.clients.core import (
     members_key,
     version_key,
 )
+from app.repositories import PushSubscriptionRepository
 from app.schemas.core_events import (
     ChannelData,
     CoreEvent,
@@ -65,17 +68,30 @@ async def clear_cache(redis: Redis) -> None:
     await delete_matching(redis, CHANNEL_KEYS)
 
 
-async def handle_event(redis: Redis, raw: str) -> None:
-    """Marks the cache keys one event makes stale (api-internal.md, Caching)."""
+async def handle_event(
+    redis: Redis, session_factory: async_sessionmaker[AsyncSession], raw: str
+) -> None:
+    """Marks the cache keys one event makes stale (api-internal.md, Caching). Also deletes
+    user subscriptions when user is deactivated."""
     try:
         event = CoreEvent.model_validate_json(raw)
         match event.type:
             case CoreEventType.MEMBERSHIP_CHANGED:
                 data = MembershipData.model_validate(event.data)
                 await mark_stale(redis, members_key(data.user_id), channel_key(data.channel_id))
-            case CoreEventType.TEAM_MEMBER_CHANGED | CoreEventType.USER_DEACTIVATED:
+            case CoreEventType.TEAM_MEMBER_CHANGED:
                 data = UserData.model_validate(event.data)
                 await mark_stale(redis, members_key(data.user_id))
+            case CoreEventType.USER_DEACTIVATED:
+                data = UserData.model_validate(event.data)
+                await mark_stale(redis, members_key(data.user_id))
+                try:
+                    async with session_factory() as session, session.begin():
+                        await PushSubscriptionRepository(session).delete_for_user(data.user_id)
+                except SQLAlchemyError, OSError:  # OSError: asyncpg's connect errors
+                    logger.exception(
+                        "Could not delete push subscriptions for user %s", data.user_id
+                    )
             case CoreEventType.CHANNEL_UPDATED:
                 data = ChannelData.model_validate(event.data)
                 await mark_stale(redis, channel_key(data.channel_id))
@@ -90,7 +106,9 @@ async def handle_event(redis: Redis, raw: str) -> None:
         logger.warning("Ignoring malformed core event: %.200s", raw)
 
 
-async def listen_core_events(redis: Redis) -> None:
+async def listen_core_events(
+    redis: Redis, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
     """Runs until cancelled and survives Redis restarts (core-events.md, Missed events)."""
     backoff = 1
     while True:
@@ -103,7 +121,7 @@ async def listen_core_events(redis: Redis) -> None:
                 backoff = 1
                 async for message in pubsub.listen():
                     if message["type"] == "message":
-                        await handle_event(redis, message["data"])
+                        await handle_event(redis, session_factory, message["data"])
         except RedisError:
             logger.warning("Lost %s, retrying in %s s", CORE_EVENTS, backoff, exc_info=True)
             await asyncio.sleep(backoff)

@@ -22,6 +22,7 @@ from tests.fakes import (
     FakeSender,
     FakeSession,
     FakeSubscriptions,
+    memberships,
 )
 
 AUTHOR, ANA, BOB = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -88,6 +89,7 @@ class Fakes:
         *rows: PushSubscription,
         gone: tuple[str, ...] = (),
         core_error: Exception | None = None,
+        active: bool = True,
     ) -> None:
         self.presence = FakePresence()
         self.subscriptions = FakeSubscriptions(*rows)
@@ -96,7 +98,15 @@ class Fakes:
         self.service = PushService(
             cast(AsyncSession, FakeSession(self.log)),
             cast(PushSubscriptionRepository, self.subscriptions),
-            cast(CoreClient, FakeCore(channel=channel, error=core_error)),
+            # FakeCore gives every user these memberships; the service only reads is_active
+            cast(
+                CoreClient,
+                FakeCore(
+                    memberships=memberships(ANA, is_active=active),
+                    channel=channel,
+                    error=core_error,
+                ),
+            ),
             cast(PresenceStore, self.presence),
             cast(PushDedupe, FakeDedupe()),
             cast(WebPushClient, self.sender),
@@ -197,6 +207,15 @@ async def test_skips_users_with_a_tab_on_screen():
     await fakes.service.handle(created(channel))
 
     assert fakes.pushed == [BOB]
+
+
+async def test_deactivated_users_are_skipped():
+    channel = member_channel((ANA, "all", False))
+    fakes = Fakes(channel, subscription(ANA), active=False)
+
+    await fakes.service.handle(created(channel))
+
+    assert fakes.sender.sent == []
 
 
 async def test_users_without_subscriptions_are_skipped():
