@@ -393,6 +393,9 @@ class FakeReactions:
         self.rows.append((message_id, user_id, emoji))
         return datetime.now(UTC)
 
+    async def count_user_emoji(self, message_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        return sum(1 for row in self.rows if row[:2] == (message_id, user_id))
+
     async def remove_reaction(
         self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
     ) -> datetime | None:

@@ -17,6 +17,8 @@ from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.message_service import get_readable_message, to_reaction_responses
 
+MAX_EMOJI_PER_USER = 20  # different emoji of one user on one message (api-chat.md)
+
 
 class _AlreadyReacted(Exception):
     """Raised inside the transaction to roll back the seq it took."""
@@ -63,6 +65,13 @@ class ReactionService:
                 created_at = await self._reactions.add_reaction(message_id, user.user_id, emoji)
                 if created_at is None:
                     raise _AlreadyReacted
+
+                count = await self._reactions.count_user_emoji(message_id, user.user_id)
+                if count > MAX_EMOJI_PER_USER:
+                    raise Conflict(
+                        ErrorCode.REACTION_LIMIT_REACHED,
+                        f"You already have {MAX_EMOJI_PER_USER} different emoji on this message",
+                    )
 
                 payload = {
                     "message_id": str(message_id),

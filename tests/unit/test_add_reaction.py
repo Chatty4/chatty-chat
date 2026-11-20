@@ -20,6 +20,7 @@ from tests.fakes import (
 
 USER_ID, OTHER_ID = uuid.uuid4(), uuid.uuid4()
 USER = memberships(USER_ID)
+TWENTY = list("😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗")  # 20 different emoji
 
 
 def fakes_for(
@@ -148,3 +149,38 @@ async def test_message_in_channel_user_cannot_read_is_404():
     message = message_in(room)
 
     await assert_refused(fakes_for(room, message), message.id, 404, ErrorCode.MESSAGE_NOT_FOUND)
+
+
+async def test_a_21st_different_emoji_is_409_and_rolls_back():
+    room = channel(USER_ID, OTHER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message, [(message.id, USER_ID, emoji) for emoji in TWENTY])
+
+    with pytest.raises(AppError) as error:
+        await fakes.service.add(USER, message.id, "🤩")
+
+    assert (error.value.status_code, error.value.code) == (409, ErrorCode.REACTION_LIMIT_REACHED)
+    assert fakes.events.rows == []
+    assert fakes.bus.published == []
+    assert fakes.log[-1] == "rollback"  # the insert and the seq are undone
+
+
+async def test_an_emoji_i_already_have_is_still_accepted_at_the_limit():
+    room = channel(USER_ID, OTHER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message, [(message.id, USER_ID, emoji) for emoji in TWENTY])
+
+    response = await fakes.service.add(USER, message.id, TWENTY[0])
+
+    assert ReactionResponse(emoji=TWENTY[0], count=1, me=True) in response.reactions
+    assert fakes.events.rows == []  # nothing changed
+
+
+async def test_other_users_emoji_dont_count_toward_my_limit():
+    room = channel(USER_ID, OTHER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message, [(message.id, OTHER_ID, emoji) for emoji in TWENTY])
+
+    await fakes.service.add(USER, message.id, "🤩")
+
+    assert len(fakes.events.rows) == 1

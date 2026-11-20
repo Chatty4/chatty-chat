@@ -26,6 +26,15 @@ class ReactionRepository:
         )
         return await self._session.scalar(stmt)
 
+    async def count_user_emoji(self, message_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """How many different emoji the user has on the message."""
+        stmt = (
+            select(func.count())
+            .select_from(Reaction)
+            .where(Reaction.message_id == message_id, Reaction.user_id == user_id)
+        )
+        return (await self._session.execute(stmt)).scalar_one()
+
     async def remove_reaction(
         self, message_id: uuid.UUID, user_id: uuid.UUID, emoji: str
     ) -> datetime | None:

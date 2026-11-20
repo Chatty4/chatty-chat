@@ -30,6 +30,7 @@ class ErrorCode(StrEnum):
     MESSAGE_DELETED = "message_deleted"
     PIN_LIMIT_REACHED = "pin_limit_reached"
     GAP_TOO_LARGE = "gap_too_large"
+    REACTION_LIMIT_REACHED = "reaction_limit_reached"
 
 
 class CloseCode(IntEnum):
