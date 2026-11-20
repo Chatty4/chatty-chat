@@ -1121,3 +1121,24 @@ async def test_events_and_typing_are_joined_and_left_together(registry):
     assert joined == 1
     assert typing_channel(channel_id) not in left_after_first
     assert {channel_name(channel_id), typing_channel(channel_id)} <= set(pubsub.left)
+
+
+async def test_watch_is_limited_to_once_a_second_per_socket(gateway, monkeypatch):
+    monkeypatch.setattr(gateway_module, "WATCH_INTERVAL_SECONDS", 0.05)
+    socket, other_tab = FakeSocket(), FakeSocket()
+
+    assert gateway.can_watch(socket) is True
+    assert gateway.can_watch(socket) is False
+    assert gateway.can_watch(other_tab) is True  # each socket has its own limit
+    await asyncio.sleep(0.06)
+    assert gateway.can_watch(socket) is True
+
+
+async def test_disconnect_forgets_the_watch_limit(gateway):
+    user_id, socket = uuid.uuid4(), FakeSocket()
+    await gateway.connect(user_id, socket, [])
+    gateway.can_watch(socket)
+
+    await gateway.disconnect(user_id, socket)
+
+    assert gateway.can_watch(socket) is True
