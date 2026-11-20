@@ -101,15 +101,15 @@ async def test_a_batch_reaches_kafka_in_order_keyed_by_channel_and_is_marked(out
 
 
 class StuckProducer:
-    """Stands in for AIOKafkaProducer while Kafka hangs: every send waits until `release` is set."""
+    """Stands in for AIOKafkaProducer while Kafka hangs: nothing is acknowledged until `release`."""
 
     def __init__(self) -> None:
         self.sending = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def send_and_wait(self, topic: str, value: ChannelEvent, key: uuid.UUID) -> None:
+    async def send(self, topic: str, value: ChannelEvent, key: uuid.UUID) -> asyncio.Future[bool]:
         self.sending.set()
-        await self.release.wait()
+        return asyncio.ensure_future(self.release.wait())
 
 
 async def test_a_delete_does_not_wait_for_a_batch_stuck_on_kafka(outbox_db):

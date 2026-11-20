@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import cast
@@ -53,6 +54,50 @@ async def test_a_kafka_error_marks_nothing():
 
     assert outbox.published == []
     assert log == ["commit"]  # only the read; no transaction is open while it sends
+
+
+async def test_queues_the_whole_batch_before_waiting_for_kafka():
+    channel = uuid.uuid4()
+    outbox = FakeOutbox([row(i, channel, i) for i in (1, 2, 3)])
+    producer = FakeProducer(ack=False)
+
+    relay = asyncio.create_task(publish(outbox, producer, []))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert len(producer.sent) == 3  # all three queued while Kafka hasn't answered any
+    assert outbox.published == []
+
+    producer.ack_all()
+    assert await relay == 3
+    assert outbox.published == [1, 2, 3]
+
+
+async def test_one_refused_record_marks_none_of_the_batch():
+    channel = uuid.uuid4()
+    outbox = FakeOutbox([row(i, channel, i) for i in (1, 2, 3)])
+    producer = FakeProducer(KafkaTimeoutError(), refuse={2})
+
+    with pytest.raises(KafkaTimeoutError):
+        await publish(outbox, producer, [])
+
+    assert len(producer.sent) == 3  # the records after it were still sent
+    assert outbox.published == []  # so the whole batch goes again
+
+
+async def test_a_failed_send_still_waits_for_the_records_already_queued():
+    channel = uuid.uuid4()
+    outbox = FakeOutbox([row(i, channel, i) for i in (1, 2, 3)])
+    producer = FakeProducer(KafkaTimeoutError(), raise_on_send=2, ack=False)
+
+    relay = asyncio.create_task(publish(outbox, producer, []))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not relay.done()  # the second send() raised, but record 1 has no answer yet
+
+    producer.ack_all()
+    with pytest.raises(KafkaTimeoutError):
+        await relay
+    assert outbox.published == []
 
 
 async def test_an_empty_outbox_sends_nothing():

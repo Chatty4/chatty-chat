@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -680,16 +681,50 @@ class FakeOutbox:
 
 
 class FakeProducer:
-    """Stands in for AIOKafkaProducer. `sent` are (topic, key, value); with `error`, sends fail."""
+    """Stands in for AIOKafkaProducer: send() queues a record and returns the future Kafka answers.
+    `sent` are the queued records, as (topic, key, value). With `error`, Kafka refuses the records
+    whose seq is in `refuse` (all of them without it), or, with `raise_on_send`, that send() call
+    raises it. With `ack=False` the futures wait for ack_all()."""
 
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        *,
+        refuse: set[int] | None = None,
+        raise_on_send: int | None = None,
+        ack: bool = True,
+    ) -> None:
         self.sent: list[tuple[str, uuid.UUID, Any]] = []
         self.error = error
+        self._refuse = refuse
+        self._raise_on_send = raise_on_send
+        self._ack = ack
+        self._futures: list[tuple[asyncio.Future[None], Any]] = []
 
-    async def send_and_wait(self, topic: str, value: Any, key: uuid.UUID) -> None:
-        if self.error:
+    async def send(self, topic: str, value: Any, key: uuid.UUID) -> asyncio.Future[None]:
+        if self.error and self._raise_on_send == len(self.sent) + 1:
             raise self.error
         self.sent.append((topic, key, value))
+        future = asyncio.get_running_loop().create_future()
+        self._futures.append((future, value))
+        if self._ack:
+            self.ack_all()
+        return future
+
+    def ack_all(self) -> None:
+        """Kafka answers every queued record; the refused ones fail with `error`."""
+        for future, value in self._futures:
+            if future.done():
+                continue
+            if self._refused(value):
+                future.set_exception(self.error)  # type: ignore[arg-type]
+            else:
+                future.set_result(None)
+
+    def _refused(self, value: Any) -> bool:
+        if not self.error or self._raise_on_send is not None:
+            return False
+        return self._refuse is None or value.seq in self._refuse
 
 
 class FakeSubscriptions:

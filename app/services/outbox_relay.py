@@ -1,3 +1,5 @@
+import asyncio
+
 from aiokafka import AIOKafkaProducer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,8 +23,18 @@ async def publish_batch(
     if not batch:
         return 0
 
-    for _, event in batch:
-        await producer.send_and_wait(topic, event, key=event.channel_id)
+    queued = []
+    try:
+        for _, event in batch:
+            # send() only queues the record, in order; its future ends when Kafka acknowledges it
+            queued.append(await producer.send(topic, event, key=event.channel_id))
+    finally:
+        # every queued record is waited for, so a failure leaves none of them behind
+        results = await asyncio.gather(*queued, return_exceptions=True)
+
+    errors = [result for result in results if isinstance(result, BaseException)]
+    if errors:
+        raise errors[0]
 
     async with session.begin():
         await events.mark_published([row_id for row_id, _ in batch])
