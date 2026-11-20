@@ -764,3 +764,16 @@ class FakeDedupe:
         first = (message_id, user_id) not in self.claimed
         self.claimed.add((message_id, user_id))
         return first
+
+
+class FakeRateLimiter:
+    """Stands in for RateLimiter. `hits` are (name, user_id, limit, window); every hit is refused
+    with `retry_after` seconds when it is above 0."""
+
+    def __init__(self, retry_after: int = 0) -> None:
+        self.retry_after = retry_after
+        self.hits: list[tuple[str, uuid.UUID, int, int]] = []
+
+    async def hit(self, name: str, user_id: uuid.UUID, limit: int, window: int) -> int:
+        self.hits.append((name, user_id, limit, window))
+        return self.retry_after
