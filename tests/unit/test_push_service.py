@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,12 @@ from app.models import PushSubscription
 from app.repositories import MessageRepository, PushSubscriptionRepository
 from app.schemas.core import CoreChannel
 from app.schemas.events import ChannelEvent
-from app.services.push_service import PREVIEW_CHARS, PushService, push_recipients
+from app.services.push_service import (
+    MAX_PARALLEL_SENDS,
+    PREVIEW_CHARS,
+    PushService,
+    push_recipients,
+)
 from tests.fakes import (
     FakeCore,
     FakeDedupe,
@@ -92,6 +98,22 @@ class FakeMessages:
         return self._deleted
 
 
+class SlowSender(FakeSender):
+    """Each send takes a moment; `max_in_flight` is the most sends that ran at the same time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def send(self, subscription: PushSubscription, data: str) -> bool:
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        await asyncio.sleep(0.01)
+        self._in_flight -= 1
+        return await super().send(subscription, data)
+
+
 class Fakes:
     def __init__(
         self,
@@ -101,10 +123,11 @@ class Fakes:
         core_error: Exception | None = None,
         active: bool = True,
         deleted: bool = False,
+        sender: FakeSender | None = None,
     ) -> None:
         self.presence = FakePresence()
         self.subscriptions = FakeSubscriptions(*rows)
-        self.sender = FakeSender(gone)
+        self.sender = sender or FakeSender(gone)
         self.log: list[str] = []
         self.service = PushService(
             cast(AsyncSession, FakeSession(self.log)),
@@ -259,6 +282,28 @@ async def test_a_gone_browser_is_deleted_and_the_others_still_get_it():
     assert fakes.pushed == [ANA, ANA]
     assert fakes.subscriptions.deleted == [dead.endpoint]
     assert fakes.log == ["commit", "commit"]  # the read, then the delete
+
+
+async def test_browsers_get_it_in_parallel_at_most_10_at_a_time():
+    channel = member_channel((ANA, "all", False), (BOB, "all", False))
+    rows = [subscription(ANA) for _ in range(20)] + [subscription(BOB) for _ in range(5)]
+    fakes = Fakes(channel, *rows, sender=SlowSender())
+
+    await fakes.service.handle(created(channel))
+
+    assert len(fakes.pushed) == 25
+    assert cast(SlowSender, fakes.sender).max_in_flight == MAX_PARALLEL_SENDS
+
+
+async def test_only_the_gone_browsers_are_deleted_when_sent_in_parallel():
+    channel = member_channel((ANA, "all", False), (BOB, "all", False))
+    rows = [subscription(ANA), subscription(BOB), subscription(ANA), subscription(BOB)]
+    gone = (rows[1].endpoint, rows[2].endpoint)
+    fakes = Fakes(channel, *rows, gone=gone)
+
+    await fakes.service.handle(created(channel))
+
+    assert sorted(fakes.subscriptions.deleted) == sorted(gone)
 
 
 async def test_nothing_is_deleted_when_every_browser_answers():

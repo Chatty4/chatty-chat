@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from collections import defaultdict
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.clients.core import CoreClient
 from app.clients.presence import PresenceStore
 from app.clients.web_push import PushDedupe, WebPushClient
+from app.models import PushSubscription
 from app.repositories import MessageRepository, PushSubscriptionRepository
 from app.schemas.core import CoreChannel, NotifyLevel
 from app.schemas.events import ChannelEvent, EventType
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 MAX_AGE = timedelta(minutes=10)  # a notification this late is noise
 PREVIEW_CHARS = 100
+MAX_PARALLEL_SENDS = 10
 
 
 def push_recipients(
@@ -96,8 +99,9 @@ class PushService:
         for row in rows:
             by_user[row.user_id].append(row)
 
-        gone: list[str] = []
         pushed = 0
+
+        jobs: list[tuple[PushSubscription, str]] = []
         for user_id, subscriptions in by_user.items():
             if not await self._dedupe.claim(message.id, user_id):
                 continue
@@ -110,9 +114,18 @@ class PushService:
                 mentioned=user_id in mentions,
                 preview=(message.body or "")[:PREVIEW_CHARS],
             ).model_dump_json()
-            for subscription in subscriptions:
-                if not await self._sender.send(subscription, data):
-                    gone.append(subscription.endpoint)
+            jobs.extend((subscription, data) for subscription in subscriptions)
+
+        semaphore = asyncio.Semaphore(MAX_PARALLEL_SENDS)
+
+        sent = await asyncio.gather(
+            *(self._send_limited(semaphore, subscription, data) for subscription, data in jobs)
+        )
+        gone = [
+            subscription.endpoint
+            for (subscription, _), ok in zip(jobs, sent, strict=True)
+            if not ok
+        ]
 
         if gone:
             async with self._session.begin():
@@ -122,3 +135,9 @@ class PushService:
             logger.info(
                 "Pushed seq %s of channel %s to %d users", event.seq, event.channel_id, pushed
             )
+
+    async def _send_limited(
+        self, semaphore: asyncio.Semaphore, subscription: PushSubscription, data: str
+    ) -> bool:
+        async with semaphore:
+            return await self._sender.send(subscription, data)
