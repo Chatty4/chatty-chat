@@ -208,3 +208,10 @@ class MessageRepository:
             stmt = stmt.where(tuple_(rank, Message.created_at, Message.id) < tuple_(*cursor))
 
         return list((await self._session.execute(stmt)).all())
+
+    async def is_deleted(self, message_id: uuid.UUID) -> bool:
+        """True if the message was deleted, or isn't there at all."""
+        row = (
+            await self._session.execute(select(Message.deleted_at).where(Message.id == message_id))
+        ).one_or_none()
+        return row is None or row.deleted_at is not None
