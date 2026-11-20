@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_SECONDS = 5
 TYPING_INTERVAL_SECONDS = 3
+WATCH_INTERVAL_SECONDS = 1  # api-chat.md, Rate limits
 
 
 def _channel_names(channel_ids: list[uuid.UUID]) -> list[str]:
@@ -73,6 +74,8 @@ class Gateway:
         self._closing: set[asyncio.Task] = set()  # keeps background closes from being collected
         # when each socket last sent typing, per channel; only for the 3 s limit
         self._typing_at: dict[Socket, dict[uuid.UUID, float]] = {}
+        # when each socket's last watch was let through; only for the 1 s limit
+        self._watch_at: dict[Socket, float] = {}
 
     async def connect(
         self,
@@ -104,6 +107,7 @@ class Gateway:
         self._watching.pop(socket, None)
         self._stuck.discard(socket)
         self._typing_at.pop(socket, None)
+        self._watch_at.pop(socket, None)
         await self._unsubscribe_users(self._connections.users.leave_all(socket))
         await self._unsubscribe_channels(self._connections.channels.leave_all(socket))
         team_ids = self._connections.teams.of(socket)
@@ -128,6 +132,14 @@ class Gateway:
         if now - times.get(channel_id, -TYPING_INTERVAL_SECONDS) < TYPING_INTERVAL_SECONDS:
             return False
         times[channel_id] = now
+        return True
+
+    def can_watch(self, socket: Socket) -> bool:
+        """At most one watch per second per socket; the caller ignores the others."""
+        now = asyncio.get_running_loop().time()
+        if now - self._watch_at.get(socket, -WATCH_INTERVAL_SECONDS) < WATCH_INTERVAL_SECONDS:
+            return False
+        self._watch_at[socket] = now
         return True
 
     async def watch(self, socket: Socket, user: Memberships, channel_id: uuid.UUID) -> bool:

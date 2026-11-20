@@ -334,3 +334,19 @@ async def test_deleting_a_message_deletes_its_reactions_without_events(sessions,
     ]
     seen = await history(sessions, room, USER)
     assert (seen[sent.id], seen[kept.id]) == ([], [("👍", 1, True)])
+
+
+async def test_a_21st_different_emoji_is_409_and_takes_no_seq(sessions, room):
+    sent = await send(sessions, room)
+    bus = FakeBus()
+    twenty = list("😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗")
+    for emoji in twenty:
+        await react(sessions, room, bus, USER, sent.id, emoji)
+
+    with pytest.raises(AppError) as error:
+        await react(sessions, room, bus, USER, sent.id, "🤩")
+
+    assert error.value.code == ErrorCode.REACTION_LIMIT_REACHED
+    assert len(await reaction_rows(sessions, sent.id)) == 20
+    assert await last_seq(sessions, room.channel_id) == 21  # the message, then 20 reactions
+    assert len(bus.published) == 20

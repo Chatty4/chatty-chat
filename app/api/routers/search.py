@@ -5,12 +5,13 @@ from fastapi import APIRouter, Query
 from pydantic import AwareDatetime
 
 from app.api.deps import CurrentUser, SearchServiceDep
+from app.api.rate_limits import LIMIT_SEARCH
 from app.schemas.search import SearchResponse
 
 router = APIRouter()
 
 
-@router.get("/search", response_model=SearchResponse)
+@router.get("/search", response_model=SearchResponse, dependencies=[LIMIT_SEARCH])
 async def search(
     user: CurrentUser,
     service: SearchServiceDep,

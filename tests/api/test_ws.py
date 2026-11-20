@@ -649,3 +649,21 @@ def test_typing_does_not_reset_the_heartbeat_timer(app, ws_client, make_token, m
         ws.receive_text()
 
     assert closed.value.code == 4002
+
+
+async def test_a_watch_too_soon_is_ignored_before_chatty_core_is_asked(gateway, registry):
+    first, second = uuid.uuid4(), uuid.uuid4()
+    socket, user = FakeSocket(), watcher_of(first, second)
+    await handle(socket, watch_message(first), gateway, user, FakeCore(memberships=user))
+
+    # the watch branch only catches AppError, so asking chatty-core now fails the test
+    core = FakeCore(error=AssertionError("asked core"))
+    assert await handle(socket, watch_message(second), gateway, user, core) is False
+
+    assert socket.frames == []  # no cannot_watch either
+    assert socket in registry.channels.members(first)  # the first watch is kept
+    assert socket not in registry.channels.members(second)
+
+
+def watch_message(channel_id: uuid.UUID) -> str:
+    return json.dumps({"type": "watch", "channel_id": str(channel_id)})

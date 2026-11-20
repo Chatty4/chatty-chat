@@ -3,12 +3,15 @@ import uuid
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, ReadStateServiceDep
+from app.api.rate_limits import LIMIT_READ
 from app.schemas.read_state import MarkReadRequest, MarkReadResponse, UnreadResponse
 
 router = APIRouter()
 
 
-@router.post("/channels/{channel_id}/read", response_model=MarkReadResponse)
+@router.post(
+    "/channels/{channel_id}/read", response_model=MarkReadResponse, dependencies=[LIMIT_READ]
+)
 async def mark_read(
     channel_id: uuid.UUID, body: MarkReadRequest, user: CurrentUser, service: ReadStateServiceDep
 ) -> MarkReadResponse:

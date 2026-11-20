@@ -61,6 +61,8 @@ async def handle_message(
         case Typing():
             await handle_typing(websocket, message, gateway, access, bus, user)
         case Watch():
+            if not gateway.can_watch(websocket):
+                return False  # over the limit: ignored, and chatty-core isn't asked
             try:
                 # Fresh, not the memberships from connect: the user may have joined or left a team,
                 # or the channel may be newer than the cache.

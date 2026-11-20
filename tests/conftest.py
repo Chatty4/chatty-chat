@@ -9,8 +9,10 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
 
+from app.api.deps import get_rate_limiter
 from app.core import security
 from app.main import create_app
+from tests.fakes import FakeRateLimiter
 
 # Fallback values for environments without a .env (e.g. CI). Only without one: pydantic-settings
 # ranks environment variables above .env, so setting them would hide a local .env.
@@ -23,6 +25,8 @@ if not Path(".env").exists():  # the same relative path Settings reads
 @pytest.fixture
 def app():
     application = create_app()
+    # no Redis in API tests: every request is allowed; tests/api/test_rate_limits.py refuses
+    application.dependency_overrides[get_rate_limiter] = FakeRateLimiter
     yield application
     application.dependency_overrides.clear()
 
