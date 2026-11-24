@@ -3,11 +3,12 @@
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.models import Message
+from app.models import Attachment, Message
+from app.models.message import SEARCH_CONFIG
 from app.repositories import MessageRepository
 from tests.fakes import attached_file
 
@@ -93,3 +94,22 @@ async def test_deleting_the_message_deletes_its_attachments(sessions):
 
     async with sessions() as session:
         assert await MessageRepository(session).list_attachments([message.id]) == {}
+
+
+async def test_tsv_matches_filename_parts_labels_and_content(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(
+            message.id, [attached_file("report_q3.pdf")]
+        )
+        row.labels, row.content = "red sunset", "quarterly revenue in Bucharest"
+
+    async with sessions() as session:
+        for word in ["report", "red", "bucharest"]:
+            hit = await session.scalar(
+                select(Attachment.file_id).where(
+                    Attachment.file_id == row.file_id,
+                    Attachment.tsv.bool_op("@@")(func.plainto_tsquery(SEARCH_CONFIG, word)),
+                )
+            )
+            assert hit == row.file_id, word
