@@ -11,6 +11,7 @@ from app.models import Attachment, Message
 from app.models.message import SEARCH_CONFIG
 from app.repositories import AttachmentRepository, MessageRepository
 from app.repositories.attachments import MAX_ATTEMPTS
+from app.repositories.messages import HIGHLIGHT_START, HIGHLIGHT_STOP
 from tests.fakes import attached_file
 
 pytestmark = pytest.mark.integration
@@ -167,3 +168,46 @@ async def test_attachments_of_deleted_messages_are_not_claimed(sessions):
     async with sessions() as session:
         await only_unlabeled(session, row.file_id)
         assert await AttachmentRepository(session).claim_unlabeled() is None
+
+
+async def search(sessions, word: str, channel_ids: list[uuid.UUID] | None = None) -> list:
+    async with sessions() as session:
+        return await MessageRepository(session).search_attachments(
+            channel_ids=channel_ids or [CHANNEL_ID],
+            query=word,
+            author_id=None,
+            before=None,
+            after=None,
+            cursor=None,
+            limit=10,
+        )
+
+
+async def test_search_attachments_finds_labels_of_undeleted_messages_in_the_channels(sessions):
+    kept, deleted = await new_message(sessions, 1), await new_message(sessions, 2)
+    async with sessions.begin() as session:
+        repository = MessageRepository(session)
+        [row] = await repository.insert_attachments(kept.id, [attached_file("a.jpg", "image/jpeg")])
+        [gone] = await repository.insert_attachments(
+            deleted.id, [attached_file("b.jpg", "image/jpeg")]
+        )
+        row.labels = gone.labels = "orange, cat"
+        await repository.soft_delete_message(deleted.id)
+
+    found = await search(sessions, "orange")
+
+    assert [(r.Attachment.file_id, r.Message.id) for r in found] == [(row.file_id, kept.id)]
+    assert f"{HIGHLIGHT_START}orange{HIGHLIGHT_STOP}" in found[0].highlight
+    assert await search(sessions, "orange", [uuid.uuid4()]) == []  # another channel
+
+
+async def test_search_attachments_highlights_a_match_in_the_file_name(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        await MessageRepository(session).insert_attachments(
+            message.id, [attached_file("report_q3.pdf")]
+        )
+
+    [found] = await search(sessions, "report")
+
+    assert found.highlight.startswith(f"{HIGHLIGHT_START}report{HIGHLIGHT_STOP}")

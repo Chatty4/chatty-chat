@@ -209,6 +209,60 @@ class MessageRepository:
 
         return list((await self._session.execute(stmt)).all())
 
+    async def search_attachments(
+        self,
+        *,
+        channel_ids: list[uuid.UUID],
+        query: str,
+        author_id: uuid.UUID | None,
+        before: datetime | None,
+        after: datetime | None,
+        cursor: tuple[float, datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> list[Row[Attachment, Message, float, str]]:
+        """Files by name, labels and text; best match first, then newest message.
+        Rows of (Attachment, Message, rank, highlight). Filters apply to the message."""
+        if not channel_ids:
+            return []
+
+        tsquery = func.plainto_tsquery(SEARCH_CONFIG, query)
+        rank = func.ts_rank(Attachment.tsv, tsquery)
+        # the name split as in the tsv, so a match in "report_q3.pdf" gets its <mark>
+        name = func.regexp_replace(Attachment.filename, "[._-]+", " ", "g")
+        highlight = func.ts_headline(
+            SEARCH_CONFIG,
+            func.concat_ws(", ", name, Attachment.labels, Attachment.content),
+            tsquery,
+            f"StartSel={HIGHLIGHT_START}, StopSel={HIGHLIGHT_STOP}",
+        )
+
+        stmt = (
+            select(Attachment, Message, rank.label("rank"), highlight.label("highlight"))
+            .join(Message, Message.id == Attachment.message_id)
+            .where(
+                Attachment.tsv.bool_op("@@")(tsquery),
+                Message.channel_id.in_(channel_ids),
+                Message.deleted_at.is_(None),
+            )
+            # file_id last: one message can have several matching files
+            .order_by(rank.desc(), Message.created_at.desc(), Attachment.file_id.desc())
+            .limit(limit)
+        )
+
+        if author_id is not None:
+            stmt = stmt.where(Message.author_id == author_id)
+        if before is not None:
+            stmt = stmt.where(Message.created_at < before)
+        if after is not None:
+            stmt = stmt.where(Message.created_at > after)
+
+        if cursor is not None:
+            stmt = stmt.where(
+                tuple_(rank, Message.created_at, Attachment.file_id) < tuple_(*cursor)
+            )
+
+        return list((await self._session.execute(stmt)).all())
+
     async def is_deleted(self, message_id: uuid.UUID) -> bool:
         """True if the message was deleted, or isn't there at all."""
         row = (
