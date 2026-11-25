@@ -15,7 +15,6 @@ DOWNLOAD_URL_SECONDS = 300
 _REGION = "us-east-1"
 
 
-@lru_cache(maxsize=1)
 def _client(endpoint_url: str) -> S3Client:
     settings = get_settings()
     # A session of its own: boto3's shared default session isn't safe to create from two threads.
