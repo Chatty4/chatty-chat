@@ -30,4 +30,5 @@ LIMIT_REACTIONS = rate_limit("reactions", 60)  # add and remove together
 LIMIT_PINS = rate_limit("pins", 20)  # pin and unpin together
 LIMIT_READ = rate_limit("read", 120)
 LIMIT_SEARCH = rate_limit("search", 30)
+LIMIT_SEARCH_ATTACHMENTS = rate_limit("search_attachments", 30)
 LIMIT_PUSH = rate_limit("push", 10)  # save and delete together

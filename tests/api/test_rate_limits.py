@@ -27,6 +27,7 @@ LIMITS = {
     ("DELETE", "/channels/{channel_id}/pins/{message_id}"): ("pins", 20),
     ("POST", "/channels/{channel_id}/read"): ("read", 120),
     ("GET", "/search"): ("search", 30),
+    ("GET", "/search/attachments"): ("search_attachments", 30),
     ("POST", "/push/subscriptions"): ("push", 10),
     ("DELETE", "/push/subscriptions"): ("push", 10),
 }
@@ -45,6 +46,7 @@ REQUESTS = [
     ("DELETE", f"{API}/channels/{CHANNEL_ID}/pins/{MESSAGE_ID}", "pins", 20),
     ("POST", f"{API}/channels/{CHANNEL_ID}/read", "read", 120),
     ("GET", f"{API}/search?team_id={TEAM_ID}&q=deploy", "search", 30),
+    ("GET", f"{API}/search/attachments?team_id={TEAM_ID}&q=deploy", "search_attachments", 30),
     ("POST", f"{API}/push/subscriptions", "push", 10),
     ("DELETE", f"{API}/push/subscriptions", "push", 10),
 ]
