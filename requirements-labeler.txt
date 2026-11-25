@@ -1,0 +1,11 @@
+colorlog==6.12.0
+flatbuffers==25.12.19
+numpy==2.5.5
+omegaconf==2.4.0
+onnxruntime==1.32.0
+opencv-python-headless==5.1.0.95
+protobuf==7.36.2
+pyclipper==1.4.0
+rapidocr==3.10.0
+shapely==2.2.0
+tqdm==4.70.1

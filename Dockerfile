@@ -1,4 +1,5 @@
-FROM python:3.14-slim
+# Packages shared by the API and the labeler; changes only when requirements.txt changes
+FROM python:3.14-slim AS deps
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -12,6 +13,18 @@ RUN useradd --create-home --uid 1000 app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+
+# The labeling worker: deps + OCR and image models (~400 MB more)
+FROM deps AS labeler
+COPY requirements-labeler.txt .
+RUN pip install -r requirements-labeler.txt
+COPY app ./app
+USER app
+CMD ["python", "-m", "app.jobs.label_attachments"]
+
+
+# Last stage = what a plain build produces: the API, without the labeler packages
+FROM deps AS api
 COPY app ./app
 COPY alembic.ini .
 COPY alembic ./alembic

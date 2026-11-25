@@ -28,6 +28,7 @@ ATTACHMENT_TSV = (
     f" || setweight(to_tsvector('{SEARCH_CONFIG}', coalesce(content, '')), 'C')"
 )
 
+
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
