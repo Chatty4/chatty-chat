@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
     KAFKA_TOPIC: str = "chat.events"
 
-    # MinIO, to sign attachment downloads with chatty-chat's read-only key (D-02, D-16).
+    # MinIO, with chatty-chat's read-only key (D-02, D-16): the public URL signs downloads for the
+    # browser, the internal one is where the labeler reads attachments
+    # (http://minio:9000 in Docker).
+    MINIO_INTERNAL_URL: str = "http://127.0.0.1:9000"
     MINIO_PUBLIC_URL: str = "http://127.0.0.1:9000"
     MINIO_ACCESS_KEY: str = "chatty-chat"
     MINIO_SECRET_KEY: SecretStr = SecretStr("")

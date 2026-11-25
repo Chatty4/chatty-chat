@@ -21,6 +21,13 @@ from app.db.base import Base
 
 SEARCH_CONFIG = "english"  # the search query uses it too; changing it needs a migration
 
+# filename A, labels B, content C; the filename is split on ._- so "report_q3.pdf" matches "report"
+ATTACHMENT_TSV = (
+    f"setweight(to_tsvector('{SEARCH_CONFIG}', regexp_replace(filename, '[._-]+', ' ', 'g')), 'A')"
+    f" || setweight(to_tsvector('{SEARCH_CONFIG}', coalesce(labels, '')), 'B')"
+    f" || setweight(to_tsvector('{SEARCH_CONFIG}', coalesce(content, '')), 'C')"
+)
+
 
 class Message(Base):
     __tablename__ = "messages"
@@ -60,6 +67,10 @@ class Attachment(Base):
     """What chatty-core's attach returned for a file (D-03)."""
 
     __tablename__ = "attachments"
+    __table_args__ = (
+        Index("ix_attachments_tsv", "tsv", postgresql_using="gin"),
+        Index("ix_attachments_unlabeled", "file_id", postgresql_where=text("labeled_at IS NULL")),
+    )
 
     file_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     message_id: Mapped[uuid.UUID] = mapped_column(
@@ -70,3 +81,10 @@ class Attachment(Base):
     filename: Mapped[str] = mapped_column(Text)
     mime: Mapped[str] = mapped_column(Text)
     size: Mapped[int] = mapped_column(BigInteger)
+    labels: Mapped[str | None] = mapped_column(Text)  # colors + CLIP labels
+    content: Mapped[str | None] = mapped_column(Text, deferred=True)  # OCR or document text, capped
+    labeled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    label_attempts: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
+    tsv: Mapped[str] = mapped_column(
+        TSVECTOR, Computed(ATTACHMENT_TSV, persisted=True), deferred=True
+    )

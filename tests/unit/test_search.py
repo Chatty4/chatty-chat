@@ -9,6 +9,7 @@ import pytest
 from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import AppError
+from app.models import Attachment
 from app.repositories import MessageRepository, PinRepository, ReactionRepository
 from app.repositories.messages import HIGHLIGHT_START, HIGHLIGHT_STOP
 from app.schemas.core import (
@@ -79,6 +80,21 @@ class FakeSearchMessages:
 
     async def list_attachments(self, message_ids: list[uuid.UUID]) -> dict:
         return {}
+
+    async def search_attachments(self, **kwargs: Any) -> list[SimpleNamespace]:
+        self.calls.append(kwargs)
+        message = saved_message(JOINED, USER_ID, uuid.uuid4(), seq=1)
+        return [
+            SimpleNamespace(
+                Attachment=Attachment(
+                    file_id=uuid.uuid4(), filename="cat.jpg", mime="image/jpeg", size=10
+                ),
+                Message=message,  # both files are on one message
+                rank=0.5,
+                highlight=f"{HIGHLIGHT_START}orange{HIGHLIGHT_STOP}, cat",
+            )
+            for _ in range(min(self.count, kwargs["limit"]))
+        ]
 
     async def get_messages(self, message_ids: list[uuid.UUID]) -> dict:
         return {}
@@ -194,3 +210,39 @@ def test_highlight_never_marks_inside_a_mention():
     raw = f"<@{mention}> {HIGHLIGHT_START}cf{HIGHLIGHT_STOP}"
 
     assert to_highlight(raw) == ("&lt;@546256e4-2e02-47cf-a7c1-78f3401e3b4b&gt; <mark>cf</mark>")
+
+
+async def search_files(service: SearchService, cursor: str | None = None):
+    return await service.search_attachments(USER, TEAM, "orange", None, None, None, None, cursor, 2)
+
+
+async def test_file_results_have_the_file_its_message_and_a_safe_highlight():
+    page = await search_files(search_service(FakeSearchMessages(count=1)))
+
+    [result] = page.results
+    assert result.attachment.filename == "cat.jpg"
+    assert result.message.channel_id == JOINED
+    assert result.highlight == "<mark>orange</mark>, cat"
+    assert page.next_cursor is None
+
+
+async def test_file_cursor_continues_after_the_last_file():
+    messages = FakeSearchMessages(count=5)
+    service = search_service(messages)
+
+    first = await search_files(service)
+    await search_files(service, cursor=first.next_cursor)
+
+    last = first.results[-1]
+    assert messages.calls[1]["cursor"] == (0.5, last.message.created_at, last.attachment.file_id)
+
+
+async def test_a_message_search_cursor_is_invalid_for_files():
+    messages = FakeSearchMessages(count=5)
+    service = search_service(messages)
+    message_page = await service.search(USER, TEAM, "orange", None, None, None, None, None, 2)
+
+    with pytest.raises(AppError) as error:
+        await search_files(service, cursor=message_page.next_cursor)
+
+    assert error.value.code == ErrorCode.INVALID_CURSOR

@@ -3,12 +3,15 @@
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.models import Message
-from app.repositories import MessageRepository
+from app.models import Attachment, Message
+from app.models.message import SEARCH_CONFIG
+from app.repositories import AttachmentRepository, MessageRepository
+from app.repositories.attachments import MAX_ATTEMPTS
+from app.repositories.messages import HIGHLIGHT_START, HIGHLIGHT_STOP
 from tests.fakes import attached_file
 
 pytestmark = pytest.mark.integration
@@ -93,3 +96,118 @@ async def test_deleting_the_message_deletes_its_attachments(sessions):
 
     async with sessions() as session:
         assert await MessageRepository(session).list_attachments([message.id]) == {}
+
+
+async def test_tsv_matches_filename_parts_labels_and_content(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(
+            message.id, [attached_file("report_q3.pdf")]
+        )
+        row.labels, row.content = "red sunset", "quarterly revenue in Bucharest"
+
+    async with sessions() as session:
+        for word in ["report", "red", "bucharest"]:
+            hit = await session.scalar(
+                select(Attachment.file_id).where(
+                    Attachment.file_id == row.file_id,
+                    Attachment.tsv.bool_op("@@")(func.plainto_tsquery(SEARCH_CONFIG, word)),
+                )
+            )
+            assert hit == row.file_id, word
+
+
+async def only_unlabeled(session, file_id: uuid.UUID) -> None:
+    """Hides every other unlabeled attachment from the claim. The caller never commits."""
+    await session.execute(
+        update(Attachment)
+        .where(Attachment.labeled_at.is_(None), Attachment.file_id != file_id)
+        .values(labeled_at=func.now())
+    )
+
+
+async def test_claim_counts_the_attempt_and_saved_files_are_not_claimed(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(message.id, [attached_file()])
+
+    async with sessions() as session:  # never committed: rolled back when it closes
+        await only_unlabeled(session, row.file_id)
+        repository = AttachmentRepository(session)
+
+        claimed = await repository.claim_unlabeled()
+        assert claimed is not None and claimed.file_id == row.file_id
+        assert claimed.label_attempts == 1
+
+        await repository.save_labels(row.file_id, "orange cat", None)
+        assert await repository.claim_unlabeled() is None
+
+
+async def test_claim_gives_up_after_max_attempts(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(message.id, [attached_file()])
+
+    async with sessions() as session:
+        await only_unlabeled(session, row.file_id)
+        repository = AttachmentRepository(session)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            claimed = await repository.claim_unlabeled()
+            assert claimed is not None and claimed.label_attempts == attempt
+
+        assert await repository.claim_unlabeled() is None
+
+
+async def test_attachments_of_deleted_messages_are_not_claimed(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        repository = MessageRepository(session)
+        [row] = await repository.insert_attachments(message.id, [attached_file()])
+        await repository.soft_delete_message(message.id)
+
+    async with sessions() as session:
+        await only_unlabeled(session, row.file_id)
+        assert await AttachmentRepository(session).claim_unlabeled() is None
+
+
+async def search(sessions, word: str, channel_ids: list[uuid.UUID] | None = None) -> list:
+    async with sessions() as session:
+        return await MessageRepository(session).search_attachments(
+            channel_ids=channel_ids or [CHANNEL_ID],
+            query=word,
+            author_id=None,
+            before=None,
+            after=None,
+            cursor=None,
+            limit=10,
+        )
+
+
+async def test_search_attachments_finds_labels_of_undeleted_messages_in_the_channels(sessions):
+    kept, deleted = await new_message(sessions, 1), await new_message(sessions, 2)
+    async with sessions.begin() as session:
+        repository = MessageRepository(session)
+        [row] = await repository.insert_attachments(kept.id, [attached_file("a.jpg", "image/jpeg")])
+        [gone] = await repository.insert_attachments(
+            deleted.id, [attached_file("b.jpg", "image/jpeg")]
+        )
+        row.labels = gone.labels = "orange, cat"
+        await repository.soft_delete_message(deleted.id)
+
+    found = await search(sessions, "orange")
+
+    assert [(r.Attachment.file_id, r.Message.id) for r in found] == [(row.file_id, kept.id)]
+    assert f"{HIGHLIGHT_START}orange{HIGHLIGHT_STOP}" in found[0].highlight
+    assert await search(sessions, "orange", [uuid.uuid4()]) == []  # another channel
+
+
+async def test_search_attachments_highlights_a_match_in_the_file_name(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        await MessageRepository(session).insert_attachments(
+            message.id, [attached_file("report_q3.pdf")]
+        )
+
+    [found] = await search(sessions, "report")
+
+    assert found.highlight.startswith(f"{HIGHLIGHT_START}report{HIGHLIGHT_STOP}")

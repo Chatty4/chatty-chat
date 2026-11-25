@@ -6,7 +6,7 @@ import pytest
 
 from app.api.deps import get_core_client, get_search_service
 from app.schemas.core import TeamMembership, TeamRole
-from app.schemas.search import SearchResponse
+from app.schemas.search import AttachmentSearchResponse, SearchResponse
 from tests.fakes import FakeCore, memberships
 
 URL = "/api/chat/v1/search"
@@ -22,6 +22,10 @@ class FakeSearchService:
     async def search(self, *args: Any) -> SearchResponse:
         self.args = args
         return SearchResponse(results=[], next_cursor=None)
+
+    async def search_attachments(self, *args: Any) -> AttachmentSearchResponse:
+        self.args = args
+        return AttachmentSearchResponse(results=[], next_cursor=None)
 
 
 @pytest.fixture
@@ -93,3 +97,25 @@ async def test_no_token_is_401(client, service):
     response = await client.get(URL, params={"team_id": str(TEAM), "q": "deploy"})
 
     assert response.status_code == 401
+
+
+FILES_URL = f"{URL}/attachments"
+
+
+async def test_search_attachments_passes_the_same_query_to_the_service(client, auth, service):
+    channel_id = uuid.uuid4()
+    params = {"team_id": str(TEAM), "q": "orange", "in": str(channel_id), "limit": 5}
+
+    response = await client.get(FILES_URL, params=params, headers=auth)
+
+    assert response.status_code == 200
+    assert response.json() == {"results": [], "next_cursor": None}
+    _user, team_id, q, channel, _author, _before, _after, _cursor, limit = service.args
+    assert (team_id, q, channel, limit) == (TEAM, "orange", channel_id, 5)
+
+
+async def test_search_attachments_checks_the_query_like_search(client, auth, service):
+    response = await client.get(FILES_URL, params={"team_id": str(TEAM), "q": "a"}, headers=auth)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["fields"] == {"q": "too_short"}

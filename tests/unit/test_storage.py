@@ -10,15 +10,18 @@ from app.core.config import get_settings
 @pytest.fixture(autouse=True)
 def minio_settings(monkeypatch):
     """A public address and a key of its own, and no cached client or settings from elsewhere."""
+    monkeypatch.setenv("MINIO_INTERNAL_URL", "http://minio:9000")
     monkeypatch.setenv("MINIO_PUBLIC_URL", "http://files.example.com")
     monkeypatch.setenv("MINIO_ACCESS_KEY", "chatty-chat")
     monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret")
     monkeypatch.setenv("MINIO_BUCKET", "chatty")
     get_settings.cache_clear()
     storage.public_client.cache_clear()
+    storage.internal_client.cache_clear()
     yield
     get_settings.cache_clear()
     storage.public_client.cache_clear()
+    storage.internal_client.cache_clear()
 
 
 def test_url_is_signed_for_the_public_address():
@@ -79,3 +82,7 @@ def test_names_that_could_break_the_header(filename, fallback):
 
 def test_an_empty_name_still_has_a_fallback():
     assert storage.content_disposition("") == "attachment; filename=\"file\"; filename*=UTF-8''"
+
+
+def test_downloads_use_the_internal_address():
+    assert storage.internal_client().meta.endpoint_url == "http://minio:9000"

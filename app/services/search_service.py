@@ -9,10 +9,17 @@ from datetime import datetime
 
 from app.core.codes import ErrorCode
 from app.core.exceptions import BadRequest
+from app.models import Message
 from app.repositories import MessageRepository, PinRepository, ReactionRepository
 from app.repositories.messages import HIGHLIGHT_START, HIGHLIGHT_STOP
 from app.schemas.core import Memberships
-from app.schemas.search import SearchResponse, SearchResult
+from app.schemas.messages import AttachmentResponse, MessageResponse
+from app.schemas.search import (
+    AttachmentSearchResponse,
+    AttachmentSearchResult,
+    SearchResponse,
+    SearchResult,
+)
 from app.services.access_service import AccessService
 from app.services.message_service import to_message_response
 
@@ -63,6 +70,17 @@ def readable_channel_ids(user: Memberships, team_id: uuid.UUID) -> list[uuid.UUI
     return list(ids)
 
 
+def channels_to_search(
+    user: Memberships, team_id: uuid.UUID, channel_id: uuid.UUID | None
+) -> list[uuid.UUID]:
+    """The readable channels, or only `in` if the user can read it."""
+    channel_ids = readable_channel_ids(user, team_id)
+    if channel_id is None:
+        return channel_ids
+    # a channel the user can't read gives no results, not an error that says it exists
+    return [channel_id] if channel_id in channel_ids else []
+
+
 class SearchService:
     def __init__(
         self,
@@ -75,6 +93,28 @@ class SearchService:
         self._reactions = reactions
         self._pins = pins
         self._access = access
+
+    async def _message_responses(
+        self, messages: list[Message], user_id: uuid.UUID
+    ) -> dict[uuid.UUID, MessageResponse]:
+        """The full message objects, as GET /search returns them."""
+        ids = list(dict.fromkeys(message.id for message in messages))  # 2 files can share one
+        reactions = await self._reactions.list_reactions(ids, user_id)
+        pinned = await self._pins.pinned_message_ids(ids)
+        attachments = await self._messages.list_attachments(ids)
+        replied = await self._messages.get_messages(
+            [message.reply_to_id for message in messages if message.reply_to_id]
+        )
+        return {
+            message.id: to_message_response(
+                message,
+                reactions.get(message.id),
+                message.id in pinned,
+                attachments.get(message.id),
+                replied,
+            )
+            for message in messages
+        }
 
     async def search(
         self,
@@ -101,10 +141,7 @@ class SearchService:
         )
         key = decode_cursor(cursor, filters) if cursor else None
 
-        channel_ids = readable_channel_ids(user, team_id)
-        if channel_id is not None:
-            # a channel the user can't read gives no results, not an error that says it exists
-            channel_ids = [channel_id] if channel_id in channel_ids else []
+        channel_ids = channels_to_search(user, team_id, channel_id)
 
         # one extra row tells whether a next page exists
         rows = await self._messages.search_messages(
@@ -118,13 +155,7 @@ class SearchService:
         )
         page = rows[:limit]
 
-        message_ids = [row.Message.id for row in page]
-        reactions = await self._reactions.list_reactions(message_ids, user.user_id)
-        pinned = await self._pins.pinned_message_ids(message_ids)
-        attachments = await self._messages.list_attachments(message_ids)
-        replied = await self._messages.get_messages(
-            [row.Message.reply_to_id for row in page if row.Message.reply_to_id]
-        )
+        messages = await self._message_responses([row.Message for row in page], user.user_id)
         next_cursor = None
         if len(rows) > limit:
             last = page[-1]
@@ -135,13 +166,66 @@ class SearchService:
         return SearchResponse(
             results=[
                 SearchResult(
-                    message=to_message_response(
-                        row.Message,
-                        reactions.get(row.Message.id),
-                        row.Message.id in pinned,
-                        attachments.get(row.Message.id),
-                        replied,
+                    message=messages[row.Message.id],
+                    highlight=to_highlight(row.highlight),
+                )
+                for row in page
+            ],
+            next_cursor=next_cursor,
+        )
+
+    async def search_attachments(
+        self,
+        user: Memberships,
+        team_id: uuid.UUID,
+        q: str,
+        channel_id: uuid.UUID | None,
+        author_id: uuid.UUID | None,
+        before: datetime | None,
+        after: datetime | None,
+        cursor: str | None,
+        limit: int,
+    ) -> AttachmentSearchResponse:
+        """Files in the channels of one team the user can read, by name, labels and text."""
+        self._access.check_in_team(user, team_id)
+
+        filters = _filters_hash(
+            kind="attachments",  # a cursor from GET /search is invalid here
+            team_id=team_id,
+            q=q,
+            channel_id=channel_id,
+            author_id=author_id,
+            before=before,
+            after=after,
+        )
+        key = decode_cursor(cursor, filters) if cursor else None
+
+        rows = await self._messages.search_attachments(
+            channel_ids=channels_to_search(user, team_id, channel_id),
+            query=q,
+            author_id=author_id,
+            before=before,
+            after=after,
+            cursor=key,
+            limit=limit + 1,
+        )
+        page = rows[:limit]
+        messages = await self._message_responses([row.Message for row in page], user.user_id)
+
+        next_cursor = None
+        if len(rows) > limit:
+            last = page[-1]
+            next_cursor = encode_cursor(
+                (last.rank, last.Message.created_at, last.Attachment.file_id), filters
+            )
+
+        return AttachmentSearchResponse(
+            results=[
+                AttachmentSearchResult(
+                    attachment=AttachmentResponse.model_validate(
+                        row.Attachment, from_attributes=True
                     ),
+                    message=messages[row.Message.id],
                     highlight=to_highlight(row.highlight),
                 )
                 for row in page
