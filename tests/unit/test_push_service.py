@@ -201,6 +201,7 @@ async def test_sends_to_every_browser_of_a_member_with_the_contract_payload():
         "message_id": event.payload["message"]["id"],
         "seq": 7,
         "mentioned": False,
+        "replied": False,
         "preview": "x" * PREVIEW_CHARS,
     }
 
@@ -349,3 +350,70 @@ async def test_core_down_raises_before_anything_is_sent():
     with pytest.raises(ServiceUnavailable):
         await fakes.service.handle(created(channel))
     assert fakes.sender.sent == []
+
+
+def reply_to(author_id: uuid.UUID, mentions: tuple[uuid.UUID, ...] = ()) -> dict[str, Any]:
+    """payload.message of a reply by AUTHOR to a message of `author_id`."""
+    return {
+        "id": str(uuid.uuid4()),
+        "author_id": str(AUTHOR),
+        "body": "re",
+        "mentions": [str(user_id) for user_id in mentions],
+        "reply_to": {
+            "id": str(uuid.uuid4()),
+            "seq": 3,
+            "author_id": str(author_id),
+            "body": "hi",
+            "deleted": False,
+        },
+    }
+
+
+async def test_the_replied_author_gets_a_push_on_mentions_only():
+    channel = member_channel((ANA, "mentions", False), (BOB, "mentions", False))
+    fakes = Fakes(channel, subscription(ANA), subscription(BOB))
+
+    await fakes.service.handle(created(channel, message=reply_to(ANA)))
+
+    assert fakes.pushed == [ANA]
+    data = json.loads(fakes.sender.sent[0][1])
+    assert (data["replied"], data["mentioned"]) == (True, False)
+
+
+async def test_a_reply_that_also_mentions_is_both():
+    channel = member_channel((ANA, "mentions", False))
+    fakes = Fakes(channel, subscription(ANA))
+
+    await fakes.service.handle(created(channel, message=reply_to(ANA, mentions=(ANA,))))
+
+    data = json.loads(fakes.sender.sent[0][1])
+    assert (data["replied"], data["mentioned"]) == (True, True)
+
+
+@pytest.mark.parametrize(("level", "muted"), [("none", False), ("mentions", True)])
+async def test_a_reply_respects_nothing_and_muted(level, muted):
+    channel = member_channel((ANA, level, muted))
+    fakes = Fakes(channel, subscription(ANA))
+
+    await fakes.service.handle(created(channel, message=reply_to(ANA)))
+
+    assert fakes.pushed == []
+
+
+async def test_replying_to_my_own_message_pushes_nothing():
+    channel = member_channel((ANA, "mentions", False))
+    fakes = Fakes(channel, subscription(ANA))
+
+    await fakes.service.handle(created(channel, message=reply_to(AUTHOR)))
+
+    assert fakes.pushed == []
+
+
+async def test_only_the_replied_author_has_replied_true():
+    channel = member_channel((ANA, "all", False), (BOB, "all", False))
+    fakes = Fakes(channel, subscription(ANA), subscription(BOB))
+
+    await fakes.service.handle(created(channel, message=reply_to(BOB)))
+
+    replied = {user: json.loads(data)["replied"] for user, data in fakes.sender.sent}
+    assert replied == {ANA: False, BOB: True}
