@@ -2,7 +2,7 @@ import uuid
 from typing import cast
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.clients.core import CoreClient
@@ -125,3 +125,39 @@ async def test_a_reply_to_a_deleted_message_is_refused(sessions, room):
 
     with pytest.raises(Conflict):
         await send(sessions, room, "yes", reply_to=replied.id)
+
+
+async def stored_message(sessions, room: CoreChannel, seq: int) -> dict:
+    """payload.message of the message.created event with this seq, as it is stored."""
+    async with sessions() as session:
+        payload = await session.scalar(
+            select(ChannelEvent.payload).where(
+                ChannelEvent.channel_id == room.channel_id, ChannelEvent.seq == seq
+            )
+        )
+    return payload["message"]
+
+
+async def test_deleting_the_replied_message_clears_its_quote(sessions, room):
+    replied = await send(sessions, room, "secret plan")
+    reply = await send(sessions, room, "agreed", reply_to=replied.id)
+
+    await delete_message(sessions, room, replied.id)
+
+    stored = await stored_message(sessions, room, reply.seq)
+    assert stored["body"] == "agreed"  # the reply keeps its own text
+    assert (stored["reply_to"]["id"], stored["reply_to"]["body"]) == (str(replied.id), "")
+    assert stored["reply_to"]["deleted"] is True
+    newest = (await history(sessions, room)).messages[0]
+    assert newest.reply_to is not None
+    assert (newest.reply_to.body, newest.reply_to.deleted) == ("", True)
+
+
+async def test_deleting_a_message_leaves_other_quotes_alone(sessions, room):
+    kept = await send(sessions, room, "keep me")
+    deleted = await send(sessions, room, "delete me")
+    reply = await send(sessions, room, "re", reply_to=kept.id)
+
+    await delete_message(sessions, room, deleted.id)
+
+    assert (await stored_message(sessions, room, reply.seq))["reply_to"]["body"] == "keep me"

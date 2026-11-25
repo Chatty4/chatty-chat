@@ -521,6 +521,8 @@ class MessageService:
                     deleted.id,
                     was_edited=deleted.edited_at is not None,
                 )
+                if await self._messages.has_replies(deleted.id):
+                    await self._events.clear_quotes(deleted.channel_id, deleted.seq, deleted.id)
                 await self._reactions.delete_message_reactions(deleted.id)
                 await self._pins.delete_message_pin(deleted.id)
                 attachments = await self._messages.list_attachments([deleted.id])

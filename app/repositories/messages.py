@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Row, func, select, tuple_, update
+from sqlalchemy import Row, exists, func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -222,6 +222,11 @@ class MessageRepository:
             stmt = stmt.where(tuple_(rank, Message.created_at, Message.id) < tuple_(*cursor))
 
         return list((await self._session.execute(stmt)).all())
+
+    async def has_replies(self, message_id: uuid.UUID) -> bool:
+        """True if a message replies to this one."""
+        stmt = select(exists().where(Message.reply_to_id == message_id))
+        return bool(await self._session.scalar(stmt))
 
     async def is_deleted(self, message_id: uuid.UUID) -> bool:
         """True if the message was deleted, or isn't there at all."""
