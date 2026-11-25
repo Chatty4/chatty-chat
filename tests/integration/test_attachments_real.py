@@ -3,13 +3,14 @@
 import uuid
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.models import Attachment, Message
 from app.models.message import SEARCH_CONFIG
-from app.repositories import MessageRepository
+from app.repositories import AttachmentRepository, MessageRepository
+from app.repositories.attachments import MAX_ATTEMPTS
 from tests.fakes import attached_file
 
 pytestmark = pytest.mark.integration
@@ -113,3 +114,44 @@ async def test_tsv_matches_filename_parts_labels_and_content(sessions):
                 )
             )
             assert hit == row.file_id, word
+
+
+async def only_unlabeled(session, file_id: uuid.UUID) -> None:
+    """Hides every other unlabeled attachment from the claim. The caller never commits."""
+    await session.execute(
+        update(Attachment)
+        .where(Attachment.labeled_at.is_(None), Attachment.file_id != file_id)
+        .values(labeled_at=func.now())
+    )
+
+
+async def test_claim_counts_the_attempt_and_saved_files_are_not_claimed(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(message.id, [attached_file()])
+
+    async with sessions() as session:  # never committed: rolled back when it closes
+        await only_unlabeled(session, row.file_id)
+        repository = AttachmentRepository(session)
+
+        claimed = await repository.claim_unlabeled()
+        assert claimed is not None and claimed.file_id == row.file_id
+        assert claimed.label_attempts == 1
+
+        await repository.save_labels(row.file_id, "orange cat", None)
+        assert await repository.claim_unlabeled() is None
+
+
+async def test_claim_gives_up_after_max_attempts(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(message.id, [attached_file()])
+
+    async with sessions() as session:
+        await only_unlabeled(session, row.file_id)
+        repository = AttachmentRepository(session)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            claimed = await repository.claim_unlabeled()
+            assert claimed is not None and claimed.label_attempts == attempt
+
+        assert await repository.claim_unlabeled() is None
