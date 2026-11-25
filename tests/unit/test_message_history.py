@@ -245,3 +245,29 @@ async def test_more_than_one_position_is_400(positions):
         await fakes.service.list_history(USER, room.channel_id, before_seq, 3, **positions)
 
     assert (exc.value.status_code, exc.value.code) == (400, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_a_reply_quotes_the_message_it_replies_to():
+    room = channel(USER_ID)
+    replied, reply = messages_in(room, 1, 2)
+    reply.reply_to_id = replied.id
+    fakes = fakes_for(room, [replied, reply], last_seq=2)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 50)
+
+    newest, oldest = page.messages
+    assert newest.reply_to is not None
+    assert (newest.reply_to.id, newest.reply_to.body) == (replied.id, replied.body)
+    assert oldest.reply_to is None
+
+
+async def test_a_reply_quotes_a_message_older_than_the_page():
+    room = channel(USER_ID)
+    replied, *_, reply = messages_in(room, 1, 2, 3)
+    reply.reply_to_id = replied.id
+    fakes = fakes_for(room, [replied, *_, reply], last_seq=3)
+
+    page = await fakes.service.list_history(USER, room.channel_id, None, 1)
+
+    [only] = page.messages
+    assert only.reply_to is not None and only.reply_to.id == replied.id

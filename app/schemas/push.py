@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, BaseModel, Field
 
+from app.schemas.messages import ReplyPreview
+
 _BASE64URL = re.compile(r"[A-Za-z0-9_-]+={0,2}")
 
 PUSH_HOSTS = {"fcm.googleapis.com", "updates.push.services.mozilla.com", "web.push.apple.com"}
@@ -72,6 +74,7 @@ class PushMessage(BaseModel):
     author_id: uuid.UUID
     body: str | None = None
     mentions: list[uuid.UUID] = []
+    reply_to: ReplyPreview | None = None
 
 
 class PushNotification(BaseModel):
@@ -83,4 +86,5 @@ class PushNotification(BaseModel):
     message_id: uuid.UUID
     seq: int
     mentioned: bool
+    replied: bool
     preview: str

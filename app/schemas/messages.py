@@ -23,6 +23,7 @@ class SendMessageRequest(BaseModel):
     client_msg_id: uuid.UUID
     body: str = Field("", max_length=4000)
     file_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
+    reply_to_id: uuid.UUID | None = None
 
 
 class AttachmentResponse(BaseModel):
@@ -56,6 +57,16 @@ class ReactionsResponse(BaseModel):
     reactions: list[ReactionResponse]
 
 
+class ReplyPreview(BaseModel):
+    """The message a reply quotes (api-chat.md, the message object)."""
+
+    id: uuid.UUID
+    seq: int
+    author_id: uuid.UUID
+    body: str
+    deleted: bool
+
+
 class MessageResponse(BaseModel):
     """The message object. Also the payload of message.created."""
 
@@ -68,6 +79,7 @@ class MessageResponse(BaseModel):
     body: str
     file_ids: list[uuid.UUID]
     attachments: list[AttachmentResponse]
+    reply_to: ReplyPreview | None
     mentions: list[uuid.UUID]
     reactions: list[ReactionResponse]
     pinned: bool

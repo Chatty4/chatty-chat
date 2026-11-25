@@ -97,6 +97,7 @@ async def test_get_lists_pins_with_the_message_object(client, auth, message):
         "body",
         "file_ids",
         "attachments",
+        "reply_to",
         "mentions",
         "reactions",
         "pinned",

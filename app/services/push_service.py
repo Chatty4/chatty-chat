@@ -26,7 +26,10 @@ MAX_PARALLEL_SENDS = 10
 def push_recipients(
     author_id: uuid.UUID, mentions: set[uuid.UUID], channel: CoreChannel
 ) -> list[uuid.UUID]:
-    """The members who want a push for this message, by their channel settings only."""
+    """
+    The members who want a push for this message, by their channel settings only. `mentions` are
+    the users it is addressed to: the mentioned ones and the author of the message it replies to.
+    """
     if channel.archived or channel.team_deleted:
         return []
     return [
@@ -79,8 +82,10 @@ class PushService:
         if channel is None:  # deleted since
             return
         mentions = set(message.mentions)
+        replied_to = message.reply_to.author_id if message.reply_to else None
+        addressed = (mentions | {replied_to}) if replied_to else mentions
         users = []
-        for user_id in push_recipients(message.author_id, mentions, channel):
+        for user_id in push_recipients(message.author_id, addressed, channel):
             memberships = await self._core.get_memberships(user_id)
             if memberships is None or not memberships.is_active:
                 continue
@@ -112,6 +117,7 @@ class PushService:
                 message_id=message.id,
                 seq=event.seq,
                 mentioned=user_id in mentions,
+                replied=user_id == replied_to,
                 preview=(message.body or "")[:PREVIEW_CHARS],
             ).model_dump_json()
             jobs.extend((subscription, data) for subscription in subscriptions)

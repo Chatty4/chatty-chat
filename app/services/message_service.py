@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,7 @@ from app.schemas.messages import (
     MessageHistoryResponse,
     MessageResponse,
     ReactionResponse,
+    ReplyPreview,
     SendMessageRequest,
 )
 from app.services.access_service import AccessService
@@ -47,6 +49,7 @@ MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
 
 DETACH_ATTEMPTS = 3  # after a message is deleted: the first call and two retries
 DETACH_RETRY_SECONDS = 0.2  # times the attempt number: 0.2 s, then 0.4 s
+REPLY_PREVIEW_CHARS = 200  # api-chat.md, the message object
 
 
 class _DeletedMeanwhile(Exception):
@@ -98,17 +101,33 @@ def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionRes
     return [ReactionResponse(emoji=emoji, count=count, me=me) for emoji, count, me in rows]
 
 
+def to_reply_preview(replied: Message) -> ReplyPreview:
+    """The quote of a replied message. A deleted one has an empty body (soft delete clears it)."""
+    return ReplyPreview(
+        id=replied.id,
+        seq=replied.seq,
+        author_id=replied.author_id,
+        body=replied.body[:REPLY_PREVIEW_CHARS],
+        deleted=replied.deleted_at is not None,
+    )
+
+
 def to_message_response(
     message: Message,
     reactions: list[tuple[str, int, bool]] | None = None,
     pinned: bool = False,
     attachments: list[Attachment] | None = None,
+    replied: Mapping[uuid.UUID, Message] | None = None,
 ) -> MessageResponse:
     """
-    The message object. A deleted message has no files and no reactions (api-chat.md), even if
-    rows from before the delete are still there. Attachments come ordered by position.
+    The message object. A deleted message has no files, no reactions and no quote (api-chat.md),
+    even if rows from before the delete are still there. Attachments come ordered by position.
+    `replied` holds the messages that replies quote, by id.
     """
     files = [] if message.deleted_at else attachments or []
+    quoted = None
+    if message.reply_to_id and replied and not message.deleted_at:
+        quoted = replied.get(message.reply_to_id)
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -126,6 +145,7 @@ def to_message_response(
             )
             for attachment in files
         ],
+        reply_to=to_reply_preview(quoted) if quoted else None,
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
@@ -196,6 +216,8 @@ class MessageService:
 
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
+        if data.reply_to_id is not None:
+            await self._check_reply_target(channel_id, data.reply_to_id)  # before attach
 
         # Before the transaction, so none is held during the call to chatty-core (D-03).
         attached: list[CoreAttachment] = []
@@ -227,9 +249,15 @@ class MessageService:
                     client_msg_id=data.client_msg_id,
                     body=data.body,
                     mentions=mentions,
+                    reply_to_id=data.reply_to_id,
                 )
                 files = await self._messages.insert_attachments(message.id, attached)
-                response = to_message_response(message, attachments=files)
+                # Read under the channel's counter lock, which a delete also takes: the quote
+                # is either from before the delete, which then clears it, or already empty.
+                replied = await self._messages.get_messages(
+                    [data.reply_to_id] if data.reply_to_id else []
+                )
+                response = to_message_response(message, attachments=files, replied=replied)
                 payload = {"message": response.model_dump(mode="json")}
 
                 await self._events.insert_channel_event(
@@ -302,6 +330,19 @@ class MessageService:
                     await asyncio.sleep(DETACH_RETRY_SECONDS * attempt)
         logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
 
+    async def _check_reply_target(self, channel_id: uuid.UUID, reply_to_id: uuid.UUID) -> None:
+        """A reply quotes a message of the same channel that isn't deleted (api-chat.md)."""
+        async with self._session.begin():
+            replied = await self._messages.get_message(reply_to_id)
+
+        if replied is None or replied.channel_id != channel_id:
+            raise ValidationFailed(
+                message="reply_to_id is not a message of this channel",
+                fields={"reply_to_id": "invalid"},
+            )
+        if replied.deleted_at is not None:
+            raise Conflict(ErrorCode.MESSAGE_DELETED, "The message you replied to was deleted")
+
     async def list_history(
         self,
         user: Memberships,
@@ -358,6 +399,9 @@ class MessageService:
             pinned = await self._pins.pinned_message_ids(message_ids)
 
             attachments = await self._messages.list_attachments(message_ids)
+            replied = await self._messages.get_messages(
+                [message.reply_to_id for message in page if message.reply_to_id]
+            )
         return MessageHistoryResponse(
             messages=[
                 to_message_response(
@@ -365,6 +409,7 @@ class MessageService:
                     reactions.get(message.id),
                     message.id in pinned,
                     attachments.get(message.id),
+                    replied,
                 )
                 for message in page
             ],
@@ -388,12 +433,19 @@ class MessageService:
         return await self._full_response(existing, user_id)
 
     async def _full_response(self, message: Message, user_id: uuid.UUID) -> MessageResponse:
-        """The message object with its reactions, pin and files. Call inside a transaction."""
+        """The message object with all it shows (reactions, pin, files, quote). In a transaction."""
         reactions = await self._reactions.list_reactions([message.id], user_id)
         pinned = await self._pins.pinned_message_ids([message.id])
         attachments = await self._messages.list_attachments([message.id])
+        replied = await self._messages.get_messages(
+            [message.reply_to_id] if message.reply_to_id else []
+        )
         return to_message_response(
-            message, reactions.get(message.id), message.id in pinned, attachments.get(message.id)
+            message,
+            reactions.get(message.id),
+            message.id in pinned,
+            attachments.get(message.id),
+            replied,
         )
 
     async def edit(
@@ -469,6 +521,8 @@ class MessageService:
                     deleted.id,
                     was_edited=deleted.edited_at is not None,
                 )
+                if await self._messages.has_replies(deleted.id):
+                    await self._events.clear_quotes(deleted.channel_id, deleted.seq, deleted.id)
                 await self._reactions.delete_message_reactions(deleted.id)
                 await self._pins.delete_message_pin(deleted.id)
                 attachments = await self._messages.list_attachments([deleted.id])

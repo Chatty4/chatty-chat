@@ -80,6 +80,9 @@ class FakeSearchMessages:
     async def list_attachments(self, message_ids: list[uuid.UUID]) -> dict:
         return {}
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict:
+        return {}
+
 
 def search_service(messages: FakeSearchMessages) -> SearchService:
     return SearchService(

@@ -216,6 +216,9 @@ class FakeMessages:
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return self._stored.get(message_id)
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict[uuid.UUID, Message]:
+        return {i: self._stored[i] for i in message_ids if i in self._stored}
+
     async def update_message_body(
         self, message_id: uuid.UUID, body: str, mentions: list[uuid.UUID]
     ) -> Message | None:
@@ -257,6 +260,7 @@ class FakeMessages:
             **fields,
         )
         self.inserted.append(message)
+        self._stored[message.id] = message
         return message
 
     async def insert_attachments(
@@ -306,6 +310,9 @@ class FakeMessages:
         ]
         return sorted(rows, key=lambda message: message.seq)[:limit]
 
+    async def has_replies(self, message_id: uuid.UUID) -> bool:
+        return any(message.reply_to_id == message_id for message in self._stored.values())
+
 
 class FakeCounters:
     """`per_channel` gives get_last_seq a value per channel; otherwise it returns last_seq."""
@@ -325,13 +332,15 @@ class FakeCounters:
 class FakeChannelEvents:
     """
     `rows` are the inserted events; `stored` are what list_events_after finds.
-    `cleared` records each clear_message_text call as (channel_id, seq, message_id, was_edited).
+    `cleared` records each clear_message_text call as (channel_id, seq, message_id, was_edited),
+    quotes_cleared each clear_quotes call as (channel_id, seq, message_id).
     """
 
     def __init__(self, stored: list[ChannelEvent] | None = None) -> None:
         self.rows: list[tuple[uuid.UUID, int, str, dict[str, Any]]] = []
         self.stored = stored or []
         self.cleared: list[tuple[uuid.UUID, int, uuid.UUID, bool]] = []
+        self.quotes_cleared: list[tuple[uuid.UUID, int, uuid.UUID]] = []
 
     async def insert_channel_event(
         self, channel_id: uuid.UUID, seq: int, event_type: str, payload: dict[str, Any]
@@ -348,6 +357,9 @@ class FakeChannelEvents:
     ) -> list[ChannelEvent]:
         rows = [e for e in self.stored if e.channel_id == channel_id and e.seq > after_seq]
         return sorted(rows, key=lambda event: event.seq)[:limit]
+
+    async def clear_quotes(self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID) -> None:
+        self.quotes_cleared.append((channel_id, seq, message_id))
 
 
 class FakeReadState:
