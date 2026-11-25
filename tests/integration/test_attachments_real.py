@@ -155,3 +155,15 @@ async def test_claim_gives_up_after_max_attempts(sessions):
             assert claimed is not None and claimed.label_attempts == attempt
 
         assert await repository.claim_unlabeled() is None
+
+
+async def test_attachments_of_deleted_messages_are_not_claimed(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        repository = MessageRepository(session)
+        [row] = await repository.insert_attachments(message.id, [attached_file()])
+        await repository.soft_delete_message(message.id)
+
+    async with sessions() as session:
+        await only_unlabeled(session, row.file_id)
+        assert await AttachmentRepository(session).claim_unlabeled() is None

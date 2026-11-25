@@ -6,6 +6,16 @@ from app.labeling.documents import READERS, document_text
 IMAGES = {"image/png", "image/jpeg", "image/webp", "image/gif"}  # api-chat.md
 
 
+def load_models() -> None:
+    """OCR and CLIP, before the first claim: a missing model stops the worker at start instead
+    of failing (and counting an attempt for) every image."""
+    from app.labeling.clip import _model
+    from app.labeling.ocr import _engine
+
+    _engine()
+    _model()
+
+
 def is_labeled(mime: str) -> bool:
     """Other types match by file name only, so they're never downloaded."""
     return mime in IMAGES or mime in READERS or mime.startswith("text/")
