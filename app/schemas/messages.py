@@ -23,6 +23,7 @@ class SendMessageRequest(BaseModel):
     client_msg_id: uuid.UUID
     body: str = Field("", max_length=4000)
     file_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
+    reply_to_id: uuid.UUID | None = None
 
 
 class AttachmentResponse(BaseModel):

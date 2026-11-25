@@ -260,6 +260,7 @@ class FakeMessages:
             **fields,
         )
         self.inserted.append(message)
+        self._stored[message.id] = message
         return message
 
     async def insert_attachments(

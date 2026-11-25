@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -454,3 +455,52 @@ async def test_unknown_outcome_keeps_the_files_attached(caplog):
 
     assert core.detach_calls == []
     assert "Kept files attached, the save is unknown" in caplog.text
+
+
+async def test_a_reply_is_saved_and_quotes_the_replied_message():
+    room = channel(USER_ID, OTHER_ID)
+    replied = saved_message(room.channel_id, OTHER_ID, uuid.uuid4(), seq=1)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(stored=[replied]))
+    fakes.counters.last_seq = 1
+
+    message, created = await fakes.service.send(
+        USER, room.channel_id, request("yes", reply_to_id=replied.id)
+    )
+
+    assert created
+    assert fakes.messages.inserted[0].reply_to_id == replied.id
+    assert message.reply_to is not None
+    assert (message.reply_to.id, message.reply_to.author_id) == (replied.id, OTHER_ID)
+    [(_, _, _, payload)] = fakes.events.rows
+    assert payload["message"]["reply_to"]["id"] == str(replied.id)
+
+
+@pytest.mark.parametrize("in_other_channel", [True, False])
+async def test_a_reply_to_a_message_not_in_this_channel_is_400(in_other_channel):
+    room = channel(USER_ID)
+    elsewhere = saved_message(uuid.uuid4(), USER_ID, uuid.uuid4())
+    stored = [elsewhere] if in_other_channel else []
+    core = FakeCore(channel=room, attachments=[attached_file()])
+    fakes = MessageFakes(core, FakeMessages(stored=stored))
+
+    with pytest.raises(ValidationFailed) as exc:
+        await fakes.service.send(
+            USER, room.channel_id, request(reply_to_id=elsewhere.id, file_ids=[uuid.uuid4()])
+        )
+
+    assert exc.value.fields == {"reply_to_id": "invalid"}
+    assert core.attach_calls == []  # refused before any file is attached
+    assert fakes.events.rows == []
+
+
+async def test_a_reply_to_a_deleted_message_is_409():
+    room = channel(USER_ID)
+    replied = saved_message(room.channel_id, USER_ID, uuid.uuid4())
+    replied.deleted_at = datetime.now(UTC)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(stored=[replied]))
+
+    with pytest.raises(Conflict) as exc:
+        await fakes.service.send(USER, room.channel_id, request(reply_to_id=replied.id))
+
+    assert exc.value.code == ErrorCode.MESSAGE_DELETED
+    assert fakes.messages.inserted == []

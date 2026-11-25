@@ -216,6 +216,8 @@ class MessageService:
 
         channel = await self._access.get_writable_channel(user, channel_id)
         mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
+        if data.reply_to_id is not None:
+            await self._check_reply_target(channel_id, data.reply_to_id)  # before attach
 
         # Before the transaction, so none is held during the call to chatty-core (D-03).
         attached: list[CoreAttachment] = []
@@ -247,9 +249,15 @@ class MessageService:
                     client_msg_id=data.client_msg_id,
                     body=data.body,
                     mentions=mentions,
+                    reply_to_id=data.reply_to_id,
                 )
                 files = await self._messages.insert_attachments(message.id, attached)
-                response = to_message_response(message, attachments=files)
+                # Read under the channel's counter lock, which a delete also takes: the quote
+                # is either from before the delete, which then clears it, or already empty.
+                replied = await self._messages.get_messages(
+                    [data.reply_to_id] if data.reply_to_id else []
+                )
+                response = to_message_response(message, attachments=files, replied=replied)
                 payload = {"message": response.model_dump(mode="json")}
 
                 await self._events.insert_channel_event(
@@ -321,6 +329,19 @@ class MessageService:
                 if attempt < attempts:
                     await asyncio.sleep(DETACH_RETRY_SECONDS * attempt)
         logger.warning("Failed to detach files %s", [str(file_id) for file_id in file_ids])
+
+    async def _check_reply_target(self, channel_id: uuid.UUID, reply_to_id: uuid.UUID) -> None:
+        """A reply quotes a message of the same channel that isn't deleted (api-chat.md)."""
+        async with self._session.begin():
+            replied = await self._messages.get_message(reply_to_id)
+
+        if replied is None or replied.channel_id != channel_id:
+            raise ValidationFailed(
+                message="reply_to_id is not a message of this channel",
+                fields={"reply_to_id": "invalid"},
+            )
+        if replied.deleted_at is not None:
+            raise Conflict(ErrorCode.MESSAGE_DELETED, "The message you replied to was deleted")
 
     async def list_history(
         self,

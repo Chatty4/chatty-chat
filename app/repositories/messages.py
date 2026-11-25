@@ -50,6 +50,7 @@ class MessageRepository:
         client_msg_id: uuid.UUID,
         body: str,
         mentions: list[uuid.UUID],
+        reply_to_id: uuid.UUID | None = None,
     ) -> Message:
         """Add the message and load what the database fills in (created_at). Raises
         MessageAlreadySent when another request with the same client_msg_id saved it first."""
@@ -60,6 +61,7 @@ class MessageRepository:
             client_msg_id=client_msg_id,
             body=body,
             mentions=mentions,
+            reply_to_id=reply_to_id,
         )
         self._session.add(message)
         try:
