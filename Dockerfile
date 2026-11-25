@@ -18,6 +18,12 @@ RUN pip install -r requirements.txt
 FROM deps AS labeler
 COPY requirements-labeler.txt .
 RUN pip install -r requirements-labeler.txt
+
+# OpenCLIP weights in the image, not downloaded at runtime; same names as app/labeling/clip.py
+ENV HF_HOME=/opt/models
+RUN python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k')"
+ENV HF_HUB_OFFLINE=1
+
 COPY app ./app
 USER app
 CMD ["python", "-m", "app.jobs.label_attachments"]
