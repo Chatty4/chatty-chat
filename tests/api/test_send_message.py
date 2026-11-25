@@ -60,6 +60,7 @@ async def test_new_message_is_201_with_the_message_object(app, client, auth):
         "body",
         "file_ids",
         "attachments",
+        "reply_to",
         "mentions",
         "reactions",
         "pinned",

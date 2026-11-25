@@ -216,6 +216,9 @@ class FakeMessages:
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return self._stored.get(message_id)
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict[uuid.UUID, Message]:
+        return {i: self._stored[i] for i in message_ids if i in self._stored}
+
     async def update_message_body(
         self, message_id: uuid.UUID, body: str, mentions: list[uuid.UUID]
     ) -> Message | None:
