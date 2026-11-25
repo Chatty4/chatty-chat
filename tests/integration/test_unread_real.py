@@ -379,6 +379,51 @@ async def test_reading_up_to_the_seq_of_an_edit_covers_the_messages_before_it(se
     assert (result.last_read_seq, result.unread) == (2, 0)
 
 
+async def reply(
+    sessions, room: CoreChannel, author: uuid.UUID, to: uuid.UUID, body: str = "re"
+) -> MessageResponse:
+    data = SendMessageRequest(client_msg_id=uuid.uuid4(), body=body, reply_to_id=to)
+    async with sessions() as session:
+        message, _ = await messages(session, room).send(member(author, room), room.channel_id, data)
+    return message
+
+
+async def test_a_reply_to_my_message_counts_as_a_mention(sessions, room):
+    mine = await send(sessions, room, BOB)
+    await reply(sessions, room, ANA, mine.id)
+
+    assert await badge(sessions, room, BOB) == (1, 1)
+
+
+async def test_a_reply_that_also_mentions_me_is_one_mention(sessions, room):
+    mine = await send(sessions, room, BOB)
+    await reply(sessions, room, ANA, mine.id, f"<@{BOB}> yes")
+
+    assert await badge(sessions, room, BOB) == (1, 1)
+
+
+async def test_a_reply_to_someone_else_is_only_unread(sessions, room):
+    theirs = await send(sessions, room, ANA)
+    await reply(sessions, room, ANA, theirs.id)
+
+    assert await badge(sessions, room, BOB) == (2, 0)
+
+
+async def test_my_reply_to_my_own_message_is_not_unread(sessions, room):
+    mine = await send(sessions, room, BOB)
+    await reply(sessions, room, BOB, mine.id)
+
+    assert await badge(sessions, room, BOB) == (0, 0)
+
+
+async def test_a_reply_to_my_deleted_message_still_counts(sessions, room):
+    mine = await send(sessions, room, BOB)
+    await reply(sessions, room, ANA, mine.id)
+    await delete_message(sessions, room, BOB, mine.id)
+
+    assert await badge(sessions, room, BOB) == (1, 1)
+
+
 # Reading on another tab
 
 

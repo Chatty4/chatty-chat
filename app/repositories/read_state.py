@@ -1,9 +1,21 @@
 import uuid
 from typing import NamedTuple
 
-from sqlalchemy import ColumnElement, ScalarSelect, Uuid, and_, any_, func, literal, select
+from sqlalchemy import (
+    ColumnElement,
+    ScalarSelect,
+    Uuid,
+    and_,
+    any_,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.selectable import TableValuedAlias
 
 from app.models import Message, ReadState
@@ -45,8 +57,9 @@ class ReadStateRepository:
         self, user_id: uuid.UUID, channel_ids: list[uuid.UUID]
     ) -> list[UnreadCounts]:
         """
-        Unread messages and unread mentions per channel, each capped at UNREAD_CAP.
-        Every channel in channel_ids gets a row; one without a read position counts from seq 0.
+        Unread messages, and unread mentions or replies to my messages, per channel, each capped
+        at UNREAD_CAP. Every channel in channel_ids gets a row; one without a read position counts
+        from seq 0.
         """
         if not channel_ids:
             return []
@@ -62,7 +75,12 @@ class ReadStateRepository:
                 channels.c.channel_id,
                 self._capped_count(channels, user_id).label("unread"),
                 self._capped_count(
-                    channels, user_id, literal(user_id, Uuid) == any_(Message.mentions)
+                    channels,
+                    user_id,
+                    or_(
+                        literal(user_id, Uuid) == any_(Message.mentions),
+                        self._replies_to(user_id),
+                    ),
                 ).label("mentions"),
             )
             .select_from(channels)
@@ -101,3 +119,12 @@ class ReadStateRepository:
             .subquery()
         )
         return select(func.count()).select_from(rows).scalar_subquery()
+
+    @staticmethod
+    def _replies_to(user_id: uuid.UUID) -> ColumnElement[bool]:
+        """
+        The message replies to one of the user's messages. `replied` is a second name for the
+        messages table: one row is the reply, the other the message it quotes.
+        """
+        replied = aliased(Message)
+        return exists().where(replied.id == Message.reply_to_id, replied.author_id == user_id)
