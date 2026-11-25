@@ -56,6 +56,16 @@ class ReactionsResponse(BaseModel):
     reactions: list[ReactionResponse]
 
 
+class ReplyPreview(BaseModel):
+    """The message a reply quotes (api-chat.md, the message object)."""
+
+    id: uuid.UUID
+    seq: int
+    author_id: uuid.UUID
+    body: str
+    deleted: bool
+
+
 class MessageResponse(BaseModel):
     """The message object. Also the payload of message.created."""
 
@@ -68,6 +78,7 @@ class MessageResponse(BaseModel):
     body: str
     file_ids: list[uuid.UUID]
     attachments: list[AttachmentResponse]
+    reply_to: ReplyPreview | None
     mentions: list[uuid.UUID]
     reactions: list[ReactionResponse]
     pinned: bool

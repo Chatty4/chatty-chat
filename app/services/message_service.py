@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,7 @@ from app.schemas.messages import (
     MessageHistoryResponse,
     MessageResponse,
     ReactionResponse,
+    ReplyPreview,
     SendMessageRequest,
 )
 from app.services.access_service import AccessService
@@ -47,6 +49,7 @@ MENTION = re.compile(r"<@([0-9a-fA-F-]{36})>")
 
 DETACH_ATTEMPTS = 3  # after a message is deleted: the first call and two retries
 DETACH_RETRY_SECONDS = 0.2  # times the attempt number: 0.2 s, then 0.4 s
+REPLY_PREVIEW_CHARS = 200  # api-chat.md, the message object
 
 
 class _DeletedMeanwhile(Exception):
@@ -98,17 +101,33 @@ def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionRes
     return [ReactionResponse(emoji=emoji, count=count, me=me) for emoji, count, me in rows]
 
 
+def to_reply_preview(replied: Message) -> ReplyPreview:
+    """The quote of a replied message. A deleted one has an empty body (soft delete clears it)."""
+    return ReplyPreview(
+        id=replied.id,
+        seq=replied.seq,
+        author_id=replied.author_id,
+        body=replied.body[:REPLY_PREVIEW_CHARS],
+        deleted=replied.deleted_at is not None,
+    )
+
+
 def to_message_response(
     message: Message,
     reactions: list[tuple[str, int, bool]] | None = None,
     pinned: bool = False,
     attachments: list[Attachment] | None = None,
+    replied: Mapping[uuid.UUID, Message] | None = None,
 ) -> MessageResponse:
     """
-    The message object. A deleted message has no files and no reactions (api-chat.md), even if
-    rows from before the delete are still there. Attachments come ordered by position.
+    The message object. A deleted message has no files, no reactions and no quote (api-chat.md),
+    even if rows from before the delete are still there. Attachments come ordered by position.
+    `replied` holds the messages that replies quote, by id.
     """
     files = [] if message.deleted_at else attachments or []
+    quoted = None
+    if message.reply_to_id and replied and not message.deleted_at:
+        quoted = replied.get(message.reply_to_id)
     return MessageResponse(
         id=message.id,
         channel_id=message.channel_id,
@@ -126,6 +145,7 @@ def to_message_response(
             )
             for attachment in files
         ],
+        reply_to=to_reply_preview(quoted) if quoted else None,
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
@@ -358,6 +378,9 @@ class MessageService:
             pinned = await self._pins.pinned_message_ids(message_ids)
 
             attachments = await self._messages.list_attachments(message_ids)
+            replied = await self._messages.get_messages(
+                [message.reply_to_id for message in page if message.reply_to_id]
+            )
         return MessageHistoryResponse(
             messages=[
                 to_message_response(
@@ -365,6 +388,7 @@ class MessageService:
                     reactions.get(message.id),
                     message.id in pinned,
                     attachments.get(message.id),
+                    replied,
                 )
                 for message in page
             ],
@@ -388,12 +412,19 @@ class MessageService:
         return await self._full_response(existing, user_id)
 
     async def _full_response(self, message: Message, user_id: uuid.UUID) -> MessageResponse:
-        """The message object with its reactions, pin and files. Call inside a transaction."""
+        """The message object with all it shows (reactions, pin, files, quote). In a transaction."""
         reactions = await self._reactions.list_reactions([message.id], user_id)
         pinned = await self._pins.pinned_message_ids([message.id])
         attachments = await self._messages.list_attachments([message.id])
+        replied = await self._messages.get_messages(
+            [message.reply_to_id] if message.reply_to_id else []
+        )
         return to_message_response(
-            message, reactions.get(message.id), message.id in pinned, attachments.get(message.id)
+            message,
+            reactions.get(message.id),
+            message.id in pinned,
+            attachments.get(message.id),
+            replied,
         )
 
     async def edit(

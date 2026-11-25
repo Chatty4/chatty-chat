@@ -21,6 +21,18 @@ class MessageRepository:
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return await self._session.get(Message, message_id)
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict[uuid.UUID, Message]:
+        """These messages by id, in one query. Ids that don't exist are missing from the dict."""
+        if not message_ids:
+            return {}
+
+        stmt = (
+            select(Message)
+            .where(Message.id.in_(message_ids))
+            .execution_options(populate_existing=True)
+        )
+        return {message.id: message for message in await self._session.scalars(stmt)}
+
     async def get_by_client_msg_id(
         self, author_id: uuid.UUID, client_msg_id: uuid.UUID
     ) -> Message | None:

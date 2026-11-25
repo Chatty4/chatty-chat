@@ -122,6 +122,9 @@ class SearchService:
         reactions = await self._reactions.list_reactions(message_ids, user.user_id)
         pinned = await self._pins.pinned_message_ids(message_ids)
         attachments = await self._messages.list_attachments(message_ids)
+        replied = await self._messages.get_messages(
+            [row.Message.reply_to_id for row in page if row.Message.reply_to_id]
+        )
         next_cursor = None
         if len(rows) > limit:
             last = page[-1]
@@ -137,6 +140,7 @@ class SearchService:
                         reactions.get(row.Message.id),
                         row.Message.id in pinned,
                         attachments.get(row.Message.id),
+                        replied,
                     ),
                     highlight=to_highlight(row.highlight),
                 )
