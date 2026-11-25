@@ -149,6 +149,9 @@ class PinService:
             message_ids = [message.id for _, message in rows]
             reactions = await self._reactions.list_reactions(message_ids, user.user_id)
             attachments = await self._messages.list_attachments(message_ids)
+            replied = await self._messages.get_messages(
+                [message.reply_to_id for _, message in rows if message.reply_to_id]
+            )
 
         return PinsResponse(
             pins=[
@@ -160,6 +163,7 @@ class PinService:
                         reactions.get(message.id),
                         pinned=True,
                         attachments=attachments.get(message.id),
+                        replied=replied,
                     ),
                 )
                 for pin, message in rows

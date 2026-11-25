@@ -102,12 +102,16 @@ class SearchService:
         reactions = await self._reactions.list_reactions(ids, user_id)
         pinned = await self._pins.pinned_message_ids(ids)
         attachments = await self._messages.list_attachments(ids)
+        replied = await self._messages.get_messages(
+            [message.reply_to_id for message in messages if message.reply_to_id]
+        )
         return {
             message.id: to_message_response(
                 message,
                 reactions.get(message.id),
                 message.id in pinned,
                 attachments.get(message.id),
+                replied,
             )
             for message in messages
         }

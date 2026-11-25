@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Row, func, select, tuple_, update
+from sqlalchemy import Row, exists, func, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,18 @@ class MessageRepository:
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return await self._session.get(Message, message_id)
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict[uuid.UUID, Message]:
+        """These messages by id, in one query. Ids that don't exist are missing from the dict."""
+        if not message_ids:
+            return {}
+
+        stmt = (
+            select(Message)
+            .where(Message.id.in_(message_ids))
+            .execution_options(populate_existing=True)
+        )
+        return {message.id: message for message in await self._session.scalars(stmt)}
+
     async def get_by_client_msg_id(
         self, author_id: uuid.UUID, client_msg_id: uuid.UUID
     ) -> Message | None:
@@ -38,6 +50,7 @@ class MessageRepository:
         client_msg_id: uuid.UUID,
         body: str,
         mentions: list[uuid.UUID],
+        reply_to_id: uuid.UUID | None = None,
     ) -> Message:
         """Add the message and load what the database fills in (created_at). Raises
         MessageAlreadySent when another request with the same client_msg_id saved it first."""
@@ -48,6 +61,7 @@ class MessageRepository:
             client_msg_id=client_msg_id,
             body=body,
             mentions=mentions,
+            reply_to_id=reply_to_id,
         )
         self._session.add(message)
         try:
@@ -262,6 +276,11 @@ class MessageRepository:
             )
 
         return list((await self._session.execute(stmt)).all())
+
+    async def has_replies(self, message_id: uuid.UUID) -> bool:
+        """True if a message replies to this one."""
+        stmt = select(exists().where(Message.reply_to_id == message_id))
+        return bool(await self._session.scalar(stmt))
 
     async def is_deleted(self, message_id: uuid.UUID) -> bool:
         """True if the message was deleted, or isn't there at all."""

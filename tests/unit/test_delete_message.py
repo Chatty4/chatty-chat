@@ -334,3 +334,25 @@ async def test_detach_that_keeps_failing_is_logged_and_the_delete_still_works(ca
     assert f"Failed to detach files ['{file_ids[0]}']" in caplog.text
     assert message.deleted_at is not None
     assert fakes.bus.published  # message.deleted was still sent
+
+
+async def test_deleting_a_replied_message_clears_its_quotes():
+    room = channel(USER_ID)
+    message = message_in(room)
+    reply = saved_message(room.channel_id, OTHER_ID, uuid.uuid4(), seq=4)
+    reply.reply_to_id = message.id
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(stored=[message, reply]))
+
+    await fakes.service.delete(USER, message.id)
+
+    assert fakes.events.quotes_cleared == [(room.channel_id, 3, message.id)]
+
+
+async def test_deleting_a_message_without_replies_leaves_the_quotes_alone():
+    room = channel(USER_ID)
+    message = message_in(room)
+    fakes = fakes_for(room, message)
+
+    await fakes.service.delete(USER, message.id)
+
+    assert fakes.events.quotes_cleared == []

@@ -35,6 +35,11 @@ class Message(Base):
         UniqueConstraint("channel_id", "seq"),
         UniqueConstraint("author_id", "client_msg_id"),  # retries return the original message
         Index("ix_messages_tsv", "tsv", postgresql_using="gin"),
+        Index(
+            "ix_messages_reply_to_id",
+            "reply_to_id",
+            postgresql_where=text("reply_to_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -42,6 +47,7 @@ class Message(Base):
     author_id: Mapped[uuid.UUID]
     seq: Mapped[int] = mapped_column(BigInteger)
     client_msg_id: Mapped[uuid.UUID]
+    reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
     body: Mapped[str] = mapped_column(Text)
     mentions: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), server_default=text("'{}'"))
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

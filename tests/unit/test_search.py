@@ -96,6 +96,9 @@ class FakeSearchMessages:
             for _ in range(min(self.count, kwargs["limit"]))
         ]
 
+    async def get_messages(self, message_ids: list[uuid.UUID]) -> dict:
+        return {}
+
 
 def search_service(messages: FakeSearchMessages) -> SearchService:
     return SearchService(

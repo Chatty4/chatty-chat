@@ -11,6 +11,7 @@ from app.schemas.events import EventType
 
 EMPTY_TEXT = literal("", JSONB)
 NO_MENTIONS = literal([], JSONB)
+DELETED = literal(True, JSONB)
 
 
 class ChannelEventRepository:
@@ -80,6 +81,28 @@ class ChannelEventRepository:
         # shows it.
         if was_edited:
             await self._session.execute(edited)
+
+    async def clear_quotes(self, channel_id: uuid.UUID, seq: int, message_id: uuid.UUID) -> None:
+        """A deleted message's text also leaves the quotes in its replies. `seq` is its own."""
+        stmt = (
+            update(ChannelEvent)
+            .where(
+                ChannelEvent.channel_id == channel_id,
+                ChannelEvent.seq > seq,  # replies come after the message
+                ChannelEvent.type == EventType.MESSAGE_CREATED,
+                ChannelEvent.payload[("message", "reply_to", "id")].astext == str(message_id),
+            )
+            .values(
+                payload=func.jsonb_set(
+                    func.jsonb_set(
+                        ChannelEvent.payload, ["message", "reply_to", "body"], EMPTY_TEXT
+                    ),
+                    ["message", "reply_to", "deleted"],
+                    DELETED,
+                )
+            )
+        )
+        await self._session.execute(stmt)
 
     async def delete_events_before(self, cutoff: datetime) -> int:
         """Old published events only, oldest first per channel, so sync sees what was removed."""

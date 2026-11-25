@@ -1,7 +1,7 @@
 """attachments labels and search tsv
 
 Revision ID: 1a3c60a2a5ac
-Revises: 545bdd47ad2b
+Revises: 5b041425206d
 Create Date: 2026-11-24 14:59:29.492764
 
 """
@@ -15,7 +15,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "1a3c60a2a5ac"
-down_revision: str | Sequence[str] | None = "545bdd47ad2b"
+down_revision: str | Sequence[str] | None = "5b041425206d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
