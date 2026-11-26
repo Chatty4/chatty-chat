@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Row, exists, func, select, tuple_, update
+from sqlalchemy import Row, exists, func, literal, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,41 +227,45 @@ class MessageRepository:
         self,
         *,
         channel_ids: list[uuid.UUID],
-        query: str,
+        query: str | None,
         author_id: uuid.UUID | None,
         before: datetime | None,
         after: datetime | None,
         cursor: tuple[float, datetime, uuid.UUID] | None,
         limit: int,
     ) -> list[Row[Attachment, Message, float, str]]:
-        """Files by name, labels and text; best match first, then newest message.
-        Rows of (Attachment, Message, rank, highlight). Filters apply to the message."""
+        """Files by name, labels and text, or every file without a query; best match first,
+        then newest message. Rows of (Attachment, Message, rank, highlight). Filters apply to
+        the message."""
         if not channel_ids:
             return []
 
-        tsquery = func.plainto_tsquery(SEARCH_CONFIG, query)
-        rank = func.ts_rank(Attachment.tsv, tsquery)
-        # the name split as in the tsv, so a match in "report_q3.pdf" gets its <mark>
-        name = func.regexp_replace(Attachment.filename, "[._-]+", " ", "g")
-        highlight = func.ts_headline(
-            SEARCH_CONFIG,
-            func.concat_ws(", ", name, Attachment.labels, Attachment.content),
-            tsquery,
-            f"StartSel={HIGHLIGHT_START}, StopSel={HIGHLIGHT_STOP}",
-        )
+        if query:
+            tsquery = func.plainto_tsquery(SEARCH_CONFIG, query)
+            rank = func.ts_rank(Attachment.tsv, tsquery)
+            # the name split as in the tsv, so a match in "report_q3.pdf" gets its <mark>
+            name = func.regexp_replace(Attachment.filename, "[._-]+", " ", "g")
+            highlight = func.ts_headline(
+                SEARCH_CONFIG,
+                func.concat_ws(", ", name, Attachment.labels, Attachment.content),
+                tsquery,
+                f"StartSel={HIGHLIGHT_START}, StopSel={HIGHLIGHT_STOP}",
+            )
+        else:
+            # newest first: every rank is 0, so the cursor keeps its
+            # (rank, created_at, file_id) shape
+            rank, highlight = literal(0.0), literal("")
 
         stmt = (
             select(Attachment, Message, rank.label("rank"), highlight.label("highlight"))
             .join(Message, Message.id == Attachment.message_id)
-            .where(
-                Attachment.tsv.bool_op("@@")(tsquery),
-                Message.channel_id.in_(channel_ids),
-                Message.deleted_at.is_(None),
-            )
+            .where(Message.channel_id.in_(channel_ids), Message.deleted_at.is_(None))
             # file_id last: one message can have several matching files
             .order_by(rank.desc(), Message.created_at.desc(), Attachment.file_id.desc())
             .limit(limit)
         )
+        if query:
+            stmt = stmt.where(Attachment.tsv.bool_op("@@")(tsquery))
 
         if author_id is not None:
             stmt = stmt.where(Message.author_id == author_id)
