@@ -10,7 +10,7 @@ from app.clients.core import CoreClient
 from app.core.config import get_settings
 from app.models import ChannelCounter, Message, ReadState
 from app.repositories import ChannelCounterRepository, ReadStateRepository
-from app.repositories.read_state import UNREAD_CAP, UnreadCounts
+from app.repositories.read_state import UNREAD_CAP, ReadPosition, UnreadCounts
 from app.schemas.core import CoreChannel
 from app.schemas.read_state import MarkReadResponse
 from app.services.access_service import AccessService
@@ -91,6 +91,13 @@ async def count_unread(sessions, *rooms: CoreChannel) -> list[UnreadCounts]:
         )
 
 
+async def advance(sessions, room: CoreChannel, seq: int) -> ReadPosition:
+    async with sessions.begin() as session:
+        return await ReadStateRepository(session).advance_read_position(
+            USER_ID, room.channel_id, seq
+        )
+
+
 async def test_counts_skip_my_own_and_deleted_messages_and_count_mentions(sessions, make_room):
     room = make_room()
     await add_messages(
@@ -156,3 +163,19 @@ async def test_the_position_only_moves_forward_and_stops_at_the_last_message(ses
 
 async def test_no_channels_is_an_empty_list(sessions):
     assert await count_unread(sessions) == []
+
+
+async def test_a_first_position_above_0_moved(sessions, make_room):
+    room = make_room()
+
+    assert await advance(sessions, room, 4) == ReadPosition(4, moved=True)
+
+
+async def test_advance_says_whether_the_position_moved(sessions, make_room):
+    room = make_room()
+
+    assert await advance(sessions, room, 0) == ReadPosition(0, moved=False)  # a new row at 0
+    assert await advance(sessions, room, 5) == ReadPosition(5, moved=True)
+    assert await advance(sessions, room, 5) == ReadPosition(5, moved=False)
+    assert await advance(sessions, room, 3) == ReadPosition(5, moved=False)  # an old tab
+    assert await advance(sessions, room, 8) == ReadPosition(8, moved=True)

@@ -18,7 +18,7 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
-from app.repositories.read_state import UnreadCounts
+from app.repositories.read_state import ReadPosition, UnreadCounts
 from app.schemas.core import CoreAttachment, CoreChannel, Memberships, TeamMembership
 from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
@@ -375,10 +375,11 @@ class FakeReadState:
 
     async def advance_read_position(
         self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
-    ) -> int:
+    ) -> ReadPosition:
         key = (user_id, channel_id)
-        self.positions[key] = max(self.positions.get(key, 0), seq)
-        return self.positions[key]
+        old = self.positions.get(key, 0)
+        self.positions[key] = max(old, seq)
+        return ReadPosition(self.positions[key], moved=self.positions[key] > old)
 
     async def count_unread(
         self, user_id: uuid.UUID, channel_ids: list[uuid.UUID]

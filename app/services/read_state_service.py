@@ -53,7 +53,7 @@ class ReadStateService:
 
         return MarkReadResponse(
             channel_id=channel_id,
-            last_read_seq=position,
+            last_read_seq=position.last_read_seq,
             unread=counts.unread,
             mentions=counts.mentions,
         )

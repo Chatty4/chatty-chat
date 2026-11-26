@@ -29,29 +29,39 @@ class UnreadCounts(NamedTuple):
     mentions: int
 
 
+class ReadPosition(NamedTuple):
+    last_read_seq: int
+    moved: bool  # True only when the stored position went up
+
+
 class ReadStateRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def advance_read_position(
         self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
-    ) -> int:
+    ) -> ReadPosition:
         """
         Move the user's read position to seq. It only moves forward.
-        Returns the stored position.
+        Returns the stored position and whether it moved.
         """
         stmt = insert(ReadState).values(user_id=user_id, channel_id=channel_id, last_read_seq=seq)
         stmt = stmt.on_conflict_do_update(
             index_elements=[ReadState.user_id, ReadState.channel_id],
-            set_={
-                "last_read_seq": func.greatest(
-                    ReadState.last_read_seq, stmt.excluded.last_read_seq
-                ),
-                "updated_at": func.now(),
-            },
+            set_={"last_read_seq": stmt.excluded.last_read_seq, "updated_at": func.now()},
+            # no row comes back when the position wouldn't go up
+            where=ReadState.last_read_seq < stmt.excluded.last_read_seq,
         ).returning(ReadState.last_read_seq)
 
-        return (await self._session.execute(stmt)).scalar_one()
+        moved_to = (await self._session.execute(stmt)).scalar_one_or_none()
+        if moved_to is not None:
+            return ReadPosition(moved_to, moved=moved_to > 0)  # a new row at 0 moved nothing
+
+        # The upsert locked the conflicting row, so this reads its current value.
+        stmt = select(ReadState.last_read_seq).where(
+            ReadState.user_id == user_id, ReadState.channel_id == channel_id
+        )
+        return ReadPosition((await self._session.execute(stmt)).scalar_one(), moved=False)
 
     async def count_unread(
         self, user_id: uuid.UUID, channel_ids: list[uuid.UUID]
