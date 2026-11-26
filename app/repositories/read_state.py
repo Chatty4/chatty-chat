@@ -106,6 +106,18 @@ class ReadStateRepository:
         rows = (await self._session.execute(stmt)).all()
         return [UnreadCounts(row.channel_id, row.unread, row.mentions) for row in rows]
 
+    async def list_positions(
+        self, channel_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        """The read positions of these users in one channel. Users without one are left out."""
+        if not user_ids:
+            return {}
+        stmt = select(ReadState.user_id, ReadState.last_read_seq).where(
+            ReadState.channel_id == channel_id, ReadState.user_id.in_(user_ids)
+        )
+        rows = await self._session.execute(stmt)
+        return {row.user_id: row.last_read_seq for row in rows}
+
     @staticmethod
     def _capped_count(
         channels: TableValuedAlias, user_id: uuid.UUID, *extra: ColumnElement[bool]

@@ -19,3 +19,14 @@ class MarkReadResponse(ChannelUnread):
 
 class UnreadResponse(BaseModel):
     channels: list[ChannelUnread]
+
+
+class MemberRead(BaseModel):
+    user_id: uuid.UUID
+    last_read_seq: int
+
+
+class ChannelReadsResponse(BaseModel):
+    channel_id: uuid.UUID
+    last_seq: int
+    reads: list[MemberRead]

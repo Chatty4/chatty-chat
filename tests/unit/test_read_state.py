@@ -247,3 +247,41 @@ async def test_mark_read_takes_the_kind_from_the_memberships_without_chatty_core
     await fakes.service.mark_read(private_member(room), room.channel_id, 10)
 
     assert fakes.bus.reads == [(room.channel_id, USER_ID, 10)]
+
+
+async def test_list_reads_gives_every_member_and_0_without_a_position():
+    room = channel(USER_ID, OTHER_ID, kind="private")
+    fakes = ReadStateFakes(FakeCore(channel=room), last_seq=9)
+    fakes.read_state.positions[(USER_ID, room.channel_id)] = 9
+
+    result = await fakes.service.list_reads(USER, room.channel_id)
+
+    assert result.model_dump() == {
+        "channel_id": room.channel_id,
+        "last_seq": 9,
+        "reads": [
+            {"user_id": USER_ID, "last_read_seq": 9},
+            {"user_id": OTHER_ID, "last_read_seq": 0},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("room", "status", "code"),
+    [
+        (channel(USER_ID), 400, ErrorCode.READ_RECEIPTS_UNAVAILABLE),
+        (channel(OTHER_ID, kind="private"), 403, ErrorCode.NOT_A_MEMBER),
+        (channel(OTHER_ID), 403, ErrorCode.NOT_A_MEMBER),  # membership is checked first
+        (None, 404, ErrorCode.CHANNEL_NOT_FOUND),
+    ],
+    ids=["public", "not_a_member", "public_not_a_member", "missing"],
+)
+async def test_list_reads_is_refused(room, status, code):
+    fakes = ReadStateFakes(FakeCore(channel=room))
+    channel_id = room.channel_id if room else uuid.uuid4()
+
+    with pytest.raises(AppError) as error:
+        await fakes.service.list_reads(USER, channel_id)
+
+    assert (error.value.status_code, error.value.code) == (status, code)
+    assert fakes.log == []  # refused before the transaction

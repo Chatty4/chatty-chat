@@ -12,7 +12,7 @@ from app.models import ChannelCounter, Message, ReadState
 from app.repositories import ChannelCounterRepository, ReadStateRepository
 from app.repositories.read_state import UNREAD_CAP, ReadPosition, UnreadCounts
 from app.schemas.core import CoreChannel
-from app.schemas.read_state import MarkReadResponse
+from app.schemas.read_state import ChannelReadsResponse, MarkReadResponse
 from app.services.access_service import AccessService
 from app.services.event_bus import EventBus
 from app.services.read_state_service import ReadStateService
@@ -36,8 +36,8 @@ async def make_room(sessions):
     """Fresh channels, with their rows deleted afterwards."""
     rooms: list[CoreChannel] = []
 
-    def make() -> CoreChannel:
-        room = channel(USER_ID, OTHER_ID)
+    def make(kind: str = "public") -> CoreChannel:
+        room = channel(USER_ID, OTHER_ID, kind=kind)
         rooms.append(room)
         return room
 
@@ -72,16 +72,24 @@ async def add_messages(sessions, room: CoreChannel, *messages: dict) -> None:
         session.add(ChannelCounter(channel_id=room.channel_id, last_seq=len(messages)))
 
 
+def build_service(session, room: CoreChannel) -> ReadStateService:
+    return ReadStateService(
+        session,
+        ReadStateRepository(session),
+        ChannelCounterRepository(session),
+        AccessService(cast(CoreClient, FakeCore(channel=room))),
+        cast(EventBus, FakeBus()),
+    )
+
+
 async def mark_read(sessions, room: CoreChannel, seq: int) -> MarkReadResponse:
     async with sessions() as session:
-        service = ReadStateService(
-            session,
-            ReadStateRepository(session),
-            ChannelCounterRepository(session),
-            AccessService(cast(CoreClient, FakeCore(channel=room))),
-            cast(EventBus, FakeBus()),
-        )
-        return await service.mark_read(USER, room.channel_id, seq)
+        return await build_service(session, room).mark_read(USER, room.channel_id, seq)
+
+
+async def list_reads(sessions, room: CoreChannel) -> ChannelReadsResponse:
+    async with sessions() as session:
+        return await build_service(session, room).list_reads(USER, room.channel_id)
 
 
 async def count_unread(sessions, *rooms: CoreChannel) -> list[UnreadCounts]:
@@ -179,3 +187,16 @@ async def test_advance_says_whether_the_position_moved(sessions, make_room):
     assert await advance(sessions, room, 5) == ReadPosition(5, moved=False)
     assert await advance(sessions, room, 3) == ReadPosition(5, moved=False)  # an old tab
     assert await advance(sessions, room, 8) == ReadPosition(8, moved=True)
+
+
+async def test_reads_list_the_members_with_their_positions(sessions, make_room):
+    room = make_room(kind="private")
+    await add_messages(sessions, room, msg(), msg(), msg())
+    await mark_read(sessions, room, 2)
+    async with sessions.begin() as session:  # someone who left keeps a row but isn't a member
+        await ReadStateRepository(session).advance_read_position(uuid.uuid4(), room.channel_id, 3)
+
+    reads = await list_reads(sessions, room)
+
+    assert reads.last_seq == 3
+    assert {r.user_id: r.last_read_seq for r in reads.reads} == {USER_ID: 2, OTHER_ID: 0}

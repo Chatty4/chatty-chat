@@ -387,6 +387,15 @@ class FakeReadState:
         self.counted.append((user_id, list(channel_ids)))
         return [UnreadCounts(c, *self.counts.get(c, (0, 0))) for c in channel_ids]
 
+    async def list_positions(
+        self, channel_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        return {
+            user_id: self.positions[(user_id, channel_id)]
+            for user_id in user_ids
+            if (user_id, channel_id) in self.positions
+        }
+
 
 class FakeReactions:
     """
