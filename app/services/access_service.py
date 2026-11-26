@@ -42,6 +42,11 @@ def _can_delete_others(user: Memberships, channel: CoreChannel) -> bool:
     )
 
 
+def has_read_receipts(kind: ChannelKind) -> bool:
+    """D-19: only private channels and DMs have read receipts."""
+    return kind in (ChannelKind.PRIVATE, ChannelKind.DM)
+
+
 class AccessService:
     """(api-chat.md, "Who can read and write a channel")."""
 
@@ -93,14 +98,22 @@ class AccessService:
         if not any(team.team_id == team_id for team in user.teams):
             raise PermissionDenied(ErrorCode.NOT_A_TEAM_MEMBER)
 
-    async def check_member(self, user: Memberships, channel_id: uuid.UUID) -> None:
-        if any(c.channel_id == channel_id for c in user.channels):
-            return
+    async def check_member(self, user: Memberships, channel_id: uuid.UUID) -> ChannelKind:
+        """Raises unless the user is in the channel. Returns its kind, from the memberships
+        when they list it."""
+        for joined in user.channels:
+            if joined.channel_id == channel_id:
+                return joined.kind
+        return (await self.get_member_channel(user, channel_id)).kind
+
+    async def get_member_channel(self, user: Memberships, channel_id: uuid.UUID) -> CoreChannel:
+        """The channel from chatty-core, with its members, if the user is one of them."""
         channel = await self._core.get_channel(channel_id)
         if channel is None:
             raise NotFound(ErrorCode.CHANNEL_NOT_FOUND)
         if not _is_member(channel, user.user_id):
             raise PermissionDenied(ErrorCode.NOT_A_MEMBER)
+        return channel
 
     async def get_writable_channel(self, user: Memberships, channel_id: uuid.UUID) -> CoreChannel:
         channel = await self._core.get_channel(channel_id)

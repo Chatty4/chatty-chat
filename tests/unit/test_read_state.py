@@ -3,7 +3,7 @@ import uuid
 import pytest
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ServiceUnavailable
 from app.schemas.core import ChannelMembership, CoreChannel, Memberships, TeamMembership, TeamRole
 from tests.fakes import FakeCore, ReadStateFakes, channel, memberships
 
@@ -200,3 +200,50 @@ async def test_list_unread_outside_the_team_is_403():
 
     assert (error.value.status_code, error.value.code) == (403, ErrorCode.NOT_A_TEAM_MEMBER)
     assert fakes.read_state.counted == []
+
+
+def private_member(room: CoreChannel) -> Memberships:
+    """USER with the channel in its memberships, with the channel's real kind."""
+    user = member_of(room)
+    user.channels = [user.channels[0].model_copy(update={"kind": room.kind})]
+    return user
+
+
+@pytest.mark.parametrize("kind", ["private", "dm"])
+async def test_mark_read_sends_read_in_private_channels_and_dms(kind):
+    room = channel(USER_ID, OTHER_ID, kind=kind)
+    fakes = ReadStateFakes(FakeCore(channel=room), last_seq=120)
+
+    await fakes.service.mark_read(USER, room.channel_id, 112)
+
+    assert fakes.log == ["commit", "send_to_user", "send_read"]
+    assert fakes.bus.reads == [(room.channel_id, USER_ID, 112)]
+
+
+async def test_mark_read_sends_no_read_in_a_public_channel():
+    room = channel(USER_ID, OTHER_ID)
+    fakes = ReadStateFakes(FakeCore(channel=room), last_seq=120)
+
+    await fakes.service.mark_read(USER, room.channel_id, 112)
+
+    assert fakes.bus.reads == []
+
+
+async def test_mark_read_sends_no_read_when_the_position_didnt_move():
+    room = channel(USER_ID, OTHER_ID, kind="private")
+    fakes = ReadStateFakes(FakeCore(channel=room), last_seq=120)
+    await fakes.service.mark_read(USER, room.channel_id, 112)
+
+    await fakes.service.mark_read(USER, room.channel_id, 112)
+    await fakes.service.mark_read(USER, room.channel_id, 100)  # an old tab
+
+    assert fakes.bus.reads == [(room.channel_id, USER_ID, 112)]
+
+
+async def test_mark_read_takes_the_kind_from_the_memberships_without_chatty_core():
+    room = channel(USER_ID, OTHER_ID, kind="private")
+    fakes = ReadStateFakes(FakeCore(error=ServiceUnavailable()), last_seq=10)
+
+    await fakes.service.mark_read(private_member(room), room.channel_id, 10)
+
+    assert fakes.bus.reads == [(room.channel_id, USER_ID, 10)]

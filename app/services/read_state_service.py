@@ -6,7 +6,7 @@ from app.repositories import ChannelCounterRepository, ReadStateRepository
 from app.schemas.core import Memberships
 from app.schemas.read_state import ChannelUnread, MarkReadResponse, UnreadResponse
 from app.schemas.ws import UnreadMessage
-from app.services.access_service import AccessService
+from app.services.access_service import AccessService, has_read_receipts
 from app.services.event_bus import EventBus
 
 
@@ -32,7 +32,7 @@ class ReadStateService:
     ) -> MarkReadResponse:
         """Move the read position forward to seq and return the channel's new counts."""
         # chatty-core may be called here: do it before the transaction, not while holding it
-        await self._access.check_member(user, channel_id)
+        kind = await self._access.check_member(user, channel_id)
 
         async with self._session.begin():
             # A seq past the channel's last message is lowered to it, so a buggy client
@@ -50,6 +50,8 @@ class ReadStateService:
             user.user_id,
             UnreadMessage(channel_id=channel_id, unread=counts.unread, mentions=counts.mentions),
         )
+        if position.moved and has_read_receipts(kind):
+            await self._bus.send_read(channel_id, user.user_id, position.last_read_seq)
 
         return MarkReadResponse(
             channel_id=channel_id,

@@ -504,3 +504,36 @@ async def test_a_reply_to_a_deleted_message_is_409():
 
     assert exc.value.code == ErrorCode.MESSAGE_DELETED
     assert fakes.messages.inserted == []
+
+
+@pytest.mark.parametrize("kind", ["private", "dm"])
+async def test_sending_in_a_private_channel_or_dm_sends_the_senders_read(kind):
+    room = channel(USER_ID, kind=kind)
+    fakes = MessageFakes(FakeCore(channel=room))
+    fakes.counters.last_seq = 7
+
+    await fakes.service.send(USER, room.channel_id, request())
+
+    assert fakes.log == ["commit", "commit", "publish", "send_read"]  # after the event
+    assert fakes.bus.reads == [(room.channel_id, USER_ID, 8)]
+
+
+async def test_sending_in_a_public_channel_sends_no_read():
+    room = channel(USER_ID)
+    fakes = MessageFakes(FakeCore(channel=room))
+
+    await fakes.service.send(USER, room.channel_id, request())
+
+    assert fakes.bus.reads == []
+
+
+async def test_a_retry_sends_no_read():
+    room = channel(USER_ID, kind="private")
+    fakes = MessageFakes(FakeCore(channel=room))
+    data = request()
+    await fakes.service.send(USER, room.channel_id, data)
+
+    _, created = await fakes.service.send(USER, room.channel_id, data)
+
+    assert created is False
+    assert len(fakes.bus.reads) == 1

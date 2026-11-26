@@ -40,7 +40,7 @@ from app.schemas.messages import (
     ReplyPreview,
     SendMessageRequest,
 )
-from app.services.access_service import AccessService
+from app.services.access_service import AccessService, has_read_receipts
 from app.services.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -263,8 +263,9 @@ class MessageService:
                 await self._events.insert_channel_event(
                     channel_id, seq, EventType.MESSAGE_CREATED, payload
                 )
-                await self._read_state.advance_read_position(user.user_id, channel_id, seq)
-
+                position = await self._read_state.advance_read_position(
+                    user.user_id, channel_id, seq
+                )
         except MessageAlreadySent:
             # A concurrent request with this client_msg_id committed first; this one rolled back.
             try:
@@ -293,6 +294,11 @@ class MessageService:
                 payload=payload,
             )
         )
+
+        if position.moved and has_read_receipts(channel.kind):
+            # sending moved my read position, so others' ticks for me update (D-19)
+            await self._bus.send_read(channel_id, user.user_id, position.last_read_seq)
+
         return response, True
 
     async def _release_unsaved(
