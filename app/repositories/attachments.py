@@ -27,7 +27,7 @@ class AttachmentRepository:
             )  # chatty-core deletes their files; never searched
             .order_by(Attachment.label_attempts)  # new files first, retries after them
             .limit(1)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=Attachment, skip_locked=True)  # never lock the message
             .scalar_subquery()
         )
         stmt = (

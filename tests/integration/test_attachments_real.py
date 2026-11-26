@@ -231,3 +231,19 @@ async def test_without_a_query_all_files_newest_first(sessions):
 
     assert [r.Attachment.file_id for r in found] == [new.file_id, old.file_id]  # unlabeled too
     assert [r.highlight for r in found] == ["", ""]
+
+
+async def test_claim_doesnt_wait_for_or_lock_the_message(sessions):
+    message = await new_message(sessions, 1)
+    async with sessions.begin() as session:
+        [row] = await MessageRepository(session).insert_attachments(message.id, [attached_file()])
+
+    # Another transaction holds the message row, as an edit or delete would.
+    async with sessions() as editing, editing.begin():
+        await editing.execute(select(Message).where(Message.id == message.id).with_for_update())
+
+        async with sessions() as session:
+            await only_unlabeled(session, row.file_id)
+            claimed = await AttachmentRepository(session).claim_unlabeled()
+
+    assert claimed is not None and claimed.file_id == row.file_id
