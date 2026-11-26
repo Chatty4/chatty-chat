@@ -529,11 +529,11 @@ async def test_sending_in_a_public_channel_sends_no_read():
 
 async def test_a_retry_sends_no_read():
     room = channel(USER_ID, kind="private")
-    fakes = MessageFakes(FakeCore(channel=room))
     data = request()
-    await fakes.service.send(USER, room.channel_id, data)
+    original = saved_message(room.channel_id, USER_ID, data.client_msg_id, seq=3)
+    fakes = MessageFakes(FakeCore(channel=room), FakeMessages(existing=original))
 
     _, created = await fakes.service.send(USER, room.channel_id, data)
 
     assert created is False
-    assert len(fakes.bus.reads) == 1
+    assert fakes.bus.reads == []

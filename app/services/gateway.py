@@ -26,12 +26,14 @@ from app.schemas.core_events import (
 )
 from app.schemas.events import ChannelEvent
 from app.schemas.presence import PresenceFrame
-from app.schemas.ws import TypingFrame
+from app.schemas.ws import ReadFrame, TypingFrame
 from app.services.connection_registry import ConnectionRegistry
 from app.services.event_bus import (
+    READS_CHANNEL_PREFIX,
     TYPING_CHANNEL_PREFIX,
     USER_CHANNEL_PREFIX,
     channel_name,
+    reads_channel,
     typing_channel,
     user_channel_name,
 )
@@ -44,8 +46,12 @@ WATCH_INTERVAL_SECONDS = 1  # api-chat.md, Rate limits
 
 
 def _channel_names(channel_ids: list[uuid.UUID]) -> list[str]:
-    """Whoever gets a channel's events also gets its typing."""
-    return [name for cid in channel_ids for name in (channel_name(cid), typing_channel(cid))]
+    """Whoever gets a channel's events also gets its typing and read positions."""
+    return [
+        name
+        for cid in channel_ids
+        for name in (channel_name(cid), typing_channel(cid), reads_channel(cid))
+    ]
 
 
 class Socket(Protocol):
@@ -195,6 +201,8 @@ class Gateway:
                             await self.handle_presence(message["data"])
                         elif message["channel"].startswith(TYPING_CHANNEL_PREFIX):
                             await self.handle_typing(message["data"])
+                        elif message["channel"].startswith(READS_CHANNEL_PREFIX):
+                            await self.handle_read(message["data"])
                         elif message["channel"].startswith(USER_CHANNEL_PREFIX):
                             await self.handle_user_message(message["channel"], message["data"])
                         else:
@@ -235,6 +243,16 @@ class Gateway:
             - self._connections.users.members(frame.user_id)  # not the typing user's own tabs
             - self._stuck
         )
+        await self._send_all(sockets, frame.model_dump(mode="json"))
+
+    async def handle_read(self, raw: str) -> None:
+        """A member's read position, to every socket in the channel, the reader's own too."""
+        try:
+            frame = ReadFrame.model_validate_json(raw)
+        except ValidationError:
+            logger.warning("Ignoring malformed read frame: %.200s", raw)
+            return
+        sockets = self._connections.channels.members(frame.channel_id) - self._stuck
         await self._send_all(sockets, frame.model_dump(mode="json"))
 
     async def handle_user_message(self, redis_channel: str, raw: str) -> None:

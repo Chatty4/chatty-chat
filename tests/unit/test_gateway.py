@@ -14,7 +14,7 @@ from app.schemas.core import Memberships, TeamMembership, TeamRole
 from app.schemas.events import ChannelEvent
 from app.services import gateway as gateway_module
 from app.services.connection_registry import ConnectionRegistry
-from app.services.event_bus import channel_name, typing_channel, user_channel_name
+from app.services.event_bus import channel_name, reads_channel, typing_channel, user_channel_name
 from app.services.gateway import Gateway
 from tests.fakes import FakePresence, FakeSocket, memberships
 
@@ -63,6 +63,15 @@ def membership_changed(user_id: uuid.UUID, channel_id: uuid.UUID, action: str) -
         team_id=uuid.uuid4(),
         action=action,
     )
+
+
+def read_frame(channel_id: uuid.UUID, user_id: uuid.UUID, seq: int = 3) -> dict:
+    return {
+        "type": "read",
+        "channel_id": str(channel_id),
+        "user_id": str(user_id),
+        "last_read_seq": seq,
+    }
 
 
 async def test_channel_event_reaches_only_the_sockets_in_that_channel(gateway):
@@ -1120,7 +1129,11 @@ async def test_events_and_typing_are_joined_and_left_together(registry):
 
     assert joined == 1
     assert typing_channel(channel_id) not in left_after_first
-    assert {channel_name(channel_id), typing_channel(channel_id)} <= set(pubsub.left)
+    assert {
+        channel_name(channel_id),
+        typing_channel(channel_id),
+        reads_channel(channel_id),
+    } <= set(pubsub.left)
 
 
 async def test_watch_is_limited_to_once_a_second_per_socket(gateway, monkeypatch):
@@ -1142,3 +1155,62 @@ async def test_disconnect_forgets_the_watch_limit(gateway):
     await gateway.disconnect(user_id, socket)
 
     assert gateway.can_watch(socket) is True
+
+
+async def test_read_reaches_the_channel_and_the_readers_own_tabs(gateway):
+    channel_id, reader = uuid.uuid4(), uuid.uuid4()
+    member, own_tab, outside = FakeSocket(), FakeSocket(), FakeSocket()
+    await gateway.connect(uuid.uuid4(), member, [channel_id])
+    await gateway.connect(reader, own_tab, [channel_id])
+    await gateway.connect(uuid.uuid4(), outside, [uuid.uuid4()])
+
+    await gateway.handle_read(json.dumps(read_frame(channel_id, reader)))
+
+    assert member.frames == [read_frame(channel_id, reader)]
+    assert own_tab.frames == [read_frame(channel_id, reader)]
+    assert outside.frames == []
+
+
+async def test_a_malformed_read_frame_is_ignored(gateway):
+    channel_id = uuid.uuid4()
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    await gateway.handle_read('{"type": "read", "channel_id": "nope"}')
+
+    assert socket.frames == []
+
+
+async def test_run_sends_read_messages_to_the_channel(registry):
+    channel_id, user_id = uuid.uuid4(), uuid.uuid4()
+    message = {
+        "type": "message",
+        "channel": reads_channel(channel_id),
+        "data": json.dumps(read_frame(channel_id, user_id)),
+    }
+    redis = MagicMock()
+    redis.pubsub.return_value = ScriptedPubSub(message)
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    socket = FakeSocket()
+    await gateway.connect(uuid.uuid4(), socket, [channel_id])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert socket.frames == [read_frame(channel_id, user_id)]  # not wrapped as an event
+
+
+async def test_run_subscribes_to_reads_of_open_channels(registry):
+    channel_id = uuid.uuid4()
+    pubsub = ScriptedPubSub()
+    redis = MagicMock()
+    redis.pubsub.return_value = pubsub
+    gateway = Gateway(redis, registry, cast(PresenceStore, FakePresence()))
+    await gateway.connect(uuid.uuid4(), FakeSocket(), [channel_id])
+
+    task = asyncio.create_task(gateway.run())
+    await asyncio.sleep(0.05)
+    await stop(task)
+
+    assert reads_channel(channel_id) in pubsub.channels
