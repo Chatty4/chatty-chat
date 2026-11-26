@@ -499,6 +499,7 @@ class FakeBus:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
         self.sent: list[tuple[uuid.UUID, dict[str, Any]]] = []
+        self.reads: list[tuple[uuid.UUID, uuid.UUID, int]] = []
 
     async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
@@ -507,6 +508,12 @@ class FakeBus:
     async def send_to_user(self, user_id: uuid.UUID, message: BaseModel) -> None:
         self._log.append("send_to_user")
         self.sent.append((user_id, message.model_dump(mode="json")))
+
+    async def send_read(
+        self, channel_id: uuid.UUID, user_id: uuid.UUID, last_read_seq: int
+    ) -> None:
+        self._log.append("send_read")
+        self.reads.append((channel_id, user_id, last_read_seq))
 
 
 class MessageFakes:

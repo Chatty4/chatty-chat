@@ -7,7 +7,7 @@ import pytest
 from redis.exceptions import RedisError
 
 from app.schemas.events import ChannelEvent, EventType
-from app.services.event_bus import EventBus, channel_name, typing_channel
+from app.services.event_bus import EventBus, channel_name, reads_channel, typing_channel
 
 
 @pytest.fixture
@@ -68,3 +68,23 @@ async def test_send_typing_publishes_on_the_typing_channel(bus, redis):
 async def test_send_typing_does_not_raise_on_redis_error(bus, redis):
     redis.publish.side_effect = RedisError("down")
     await bus.send_typing(uuid.uuid4(), uuid.uuid4())
+
+
+async def test_send_read_publishes_on_the_reads_channel(bus, redis):
+    channel_id, user_id = uuid.uuid4(), uuid.uuid4()
+
+    await bus.send_read(channel_id, user_id, 42)
+
+    [(name, data)] = [call.args for call in redis.publish.call_args_list]
+    assert name == reads_channel(channel_id)
+    assert json.loads(data) == {
+        "type": "read",
+        "channel_id": str(channel_id),
+        "user_id": str(user_id),
+        "last_read_seq": 42,
+    }
+
+
+async def test_send_read_does_not_raise_on_redis_error(bus, redis):
+    redis.publish.side_effect = RedisError("down")
+    await bus.send_read(uuid.uuid4(), uuid.uuid4(), 1)

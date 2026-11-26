@@ -43,6 +43,15 @@ class UnreadMessage(BaseModel):
     mentions: int
 
 
+class ReadFrame(BaseModel):
+    """Server -> client: a member's read position moved (events.md, read)."""
+
+    type: Literal["read"] = "read"
+    channel_id: uuid.UUID
+    user_id: uuid.UUID
+    last_read_seq: int
+
+
 ClientMessage = TypeAdapter(
     Annotated[Heartbeat | Typing | Watch | Unwatch, Field(discriminator="type")]
 )
