@@ -18,7 +18,7 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
-from app.repositories.read_state import UnreadCounts
+from app.repositories.read_state import ReadPosition, UnreadCounts
 from app.schemas.core import CoreAttachment, CoreChannel, Memberships, TeamMembership
 from app.schemas.events import ChannelEvent as Envelope  # the model is ChannelEvent here
 from app.services.access_service import AccessService
@@ -375,16 +375,26 @@ class FakeReadState:
 
     async def advance_read_position(
         self, user_id: uuid.UUID, channel_id: uuid.UUID, seq: int
-    ) -> int:
+    ) -> ReadPosition:
         key = (user_id, channel_id)
-        self.positions[key] = max(self.positions.get(key, 0), seq)
-        return self.positions[key]
+        old = self.positions.get(key, 0)
+        self.positions[key] = max(old, seq)
+        return ReadPosition(self.positions[key], moved=self.positions[key] > old)
 
     async def count_unread(
         self, user_id: uuid.UUID, channel_ids: list[uuid.UUID]
     ) -> list[UnreadCounts]:
         self.counted.append((user_id, list(channel_ids)))
         return [UnreadCounts(c, *self.counts.get(c, (0, 0))) for c in channel_ids]
+
+    async def list_positions(
+        self, channel_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        return {
+            user_id: self.positions[(user_id, channel_id)]
+            for user_id in user_ids
+            if (user_id, channel_id) in self.positions
+        }
 
 
 class FakeReactions:
@@ -498,6 +508,7 @@ class FakeBus:
         self._log = log if log is not None else []
         self.published: list[tuple[uuid.UUID, dict[str, Any]]] = []
         self.sent: list[tuple[uuid.UUID, dict[str, Any]]] = []
+        self.reads: list[tuple[uuid.UUID, uuid.UUID, int]] = []
 
     async def publish(self, event: Envelope) -> None:
         self._log.append("publish")
@@ -506,6 +517,12 @@ class FakeBus:
     async def send_to_user(self, user_id: uuid.UUID, message: BaseModel) -> None:
         self._log.append("send_to_user")
         self.sent.append((user_id, message.model_dump(mode="json")))
+
+    async def send_read(
+        self, channel_id: uuid.UUID, user_id: uuid.UUID, last_read_seq: int
+    ) -> None:
+        self._log.append("send_read")
+        self.reads.append((channel_id, user_id, last_read_seq))
 
 
 class MessageFakes:

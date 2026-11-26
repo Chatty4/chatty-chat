@@ -3,8 +3,8 @@ import uuid
 import pytest
 
 from app.core.codes import ErrorCode
-from app.core.exceptions import AppError, Unauthorized, UserInactive
-from app.schemas.core import CoreChannel, TeamMembership, TeamRole
+from app.core.exceptions import AppError, ServiceUnavailable, Unauthorized, UserInactive
+from app.schemas.core import ChannelKind, ChannelMembership, CoreChannel, TeamMembership, TeamRole
 from app.services.access_service import AccessService
 from tests.fakes import FakeCore, channel, memberships
 
@@ -185,3 +185,32 @@ def test_another_team_is_403():
     with pytest.raises(AppError) as error:
         AccessService(FakeCore()).check_in_team(memberships(USER_ID, teams=[team]), uuid.uuid4())
     assert (error.value.status_code, error.value.code) == (403, ErrorCode.NOT_A_TEAM_MEMBER)
+
+
+async def test_check_member_returns_the_kind_from_the_memberships_without_chatty_core():
+    room = channel(USER_ID, kind="dm")
+    user = memberships(USER_ID)
+    user.channels = [
+        ChannelMembership.model_validate(
+            {
+                "channel_id": room.channel_id,
+                "team_id": room.team_id,
+                "kind": "dm",
+                "archived": False,
+                "role": "member",
+                "notify_level": "all",
+                "muted": False,
+                "hidden": False,
+            }
+        )
+    ]
+    access = AccessService(FakeCore(error=ServiceUnavailable()))
+
+    assert await access.check_member(user, room.channel_id) == ChannelKind.DM
+
+
+async def test_check_member_asks_chatty_core_for_a_channel_not_in_the_memberships():
+    room = channel(USER_ID, kind="private")
+    access = AccessService(FakeCore(channel=room))
+
+    assert await access.check_member(memberships(USER_ID), room.channel_id) == ChannelKind.PRIVATE

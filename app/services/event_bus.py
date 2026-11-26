@@ -6,12 +6,13 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.schemas.events import ChannelEvent
-from app.schemas.ws import TypingFrame
+from app.schemas.ws import ReadFrame, TypingFrame
 
 logger = logging.getLogger(__name__)
 
 USER_CHANNEL_PREFIX = "chat.users:"
 TYPING_CHANNEL_PREFIX = "chat.typing:"
+READS_CHANNEL_PREFIX = "chat.reads:"
 
 
 def channel_name(channel_id: uuid.UUID) -> str:
@@ -25,6 +26,11 @@ def channel_name(channel_id: uuid.UUID) -> str:
 def typing_channel(channel_id: uuid.UUID) -> str:
     """Typing frames of one channel. Gateways listen to it together with channel_name."""
     return f"{TYPING_CHANNEL_PREFIX}{channel_id}"
+
+
+def reads_channel(channel_id: uuid.UUID) -> str:
+    """Read positions of one channel (D-19). Gateways listen to it together with channel_name."""
+    return f"{READS_CHANNEL_PREFIX}{channel_id}"
 
 
 def user_channel_name(user_id: uuid.UUID) -> str:
@@ -68,3 +74,13 @@ class EventBus:
             await self._redis.publish(typing_channel(channel_id), frame.model_dump_json())
         except RedisError:
             logger.warning("Failed to publish typing for channel %s", channel_id, exc_info=True)
+
+    async def send_read(
+        self, channel_id: uuid.UUID, user_id: uuid.UUID, last_read_seq: int
+    ) -> None:
+        """Tell the channel a member's read position moved. If Redis is down, move on."""
+        frame = ReadFrame(channel_id=channel_id, user_id=user_id, last_read_seq=last_read_seq)
+        try:
+            await self._redis.publish(reads_channel(channel_id), frame.model_dump_json())
+        except RedisError:
+            logger.warning("Failed to publish read for channel %s", channel_id, exc_info=True)

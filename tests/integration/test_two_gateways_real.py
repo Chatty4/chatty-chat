@@ -38,7 +38,7 @@ def member_of(user_id: uuid.UUID, room: CoreChannel) -> Memberships:
                 {
                     "channel_id": str(room.channel_id),
                     "team_id": str(room.team_id),
-                    "kind": "public",
+                    "kind": room.kind,
                     "archived": False,
                     "role": "member",
                     "notify_level": "all",
@@ -179,4 +179,38 @@ def test_reading_on_one_gateway_sends_unread_to_my_socket_on_the_other(
         "channel_id": str(room.channel_id),
         "unread": 0,
         "mentions": 0,
+    }
+
+
+@pytest.fixture
+def private_room() -> Iterator[CoreChannel]:
+    """A fresh private channel with Ana and Bob, and its rows deleted afterwards."""
+    room = channel(ANA, BOB, kind="private")
+    yield room
+    asyncio.run(delete_rows(room.channel_id))
+
+
+def test_sending_in_a_private_channel_sends_read_to_a_socket_on_the_other_gateway(
+    start_gateway, private_room, redis, make_token
+):
+    gateway_1 = start_gateway(ANA, private_room)
+    gateway_2 = start_gateway(BOB, private_room)
+
+    with gateway_1.websocket_connect(f"{WS_URL}?token={make_token(sub=str(ANA))}") as ana:
+        # reads are subscribed together with the events, so this covers both
+        wait_for_subscribers(redis, private_room.channel_id, 1)
+        response = gateway_2.post(
+            f"/api/chat/v1/channels/{private_room.channel_id}/messages",
+            json={"client_msg_id": str(uuid.uuid4()), "body": "hi Ana"},
+            headers={"Authorization": f"Bearer {make_token(sub=str(BOB))}"},
+        )
+        assert response.status_code == 201
+        event, read = ana.receive_json(), ana.receive_json()
+
+    assert event["event"]["type"] == "message.created"
+    assert read == {
+        "type": "read",
+        "channel_id": str(private_room.channel_id),
+        "user_id": str(BOB),
+        "last_read_seq": response.json()["seq"],
     }

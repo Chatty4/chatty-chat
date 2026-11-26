@@ -163,3 +163,44 @@ async def test_unread_without_a_token_is_401(app, client):
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+
+
+def reads_url(channel_id: uuid.UUID) -> str:
+    return f"/api/chat/v1/channels/{channel_id}/reads"
+
+
+async def test_reads_is_200_with_every_members_position(app, client, auth):
+    room = channel(USER_ID, OTHER_ID, kind="private")
+    fakes = use(app, room, last_seq=9)
+    fakes.read_state.positions[(USER_ID, room.channel_id)] = 9
+
+    response = await client.get(reads_url(room.channel_id), headers=auth)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "channel_id": str(room.channel_id),
+        "last_seq": 9,
+        "reads": [
+            {"user_id": str(USER_ID), "last_read_seq": 9},
+            {"user_id": str(OTHER_ID), "last_read_seq": 0},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("room", "status", "code"),
+    [
+        (channel(USER_ID), 400, "read_receipts_unavailable"),
+        (channel(OTHER_ID, kind="dm"), 403, "not_a_member"),
+        (None, 404, "channel_not_found"),
+    ],
+    ids=["public", "not_a_member", "missing"],
+)
+async def test_refused_reads(app, client, auth, room, status, code):
+    use(app, room)
+    channel_id = room.channel_id if room else uuid.uuid4()
+
+    response = await client.get(reads_url(channel_id), headers=auth)
+
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
