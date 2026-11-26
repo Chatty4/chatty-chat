@@ -114,6 +114,13 @@ async def test_search_attachments_passes_the_same_query_to_the_service(client, a
     assert (team_id, q, channel, limit) == (TEAM, "orange", channel_id, 5)
 
 
+async def test_search_attachments_without_q_lists_files(client, auth, service):
+    response = await client.get(FILES_URL, params={"team_id": str(TEAM)}, headers=auth)
+
+    assert response.status_code == 200
+    assert service.args[2] is None  # q
+
+
 async def test_search_attachments_checks_the_query_like_search(client, auth, service):
     response = await client.get(FILES_URL, params={"team_id": str(TEAM), "q": "a"}, headers=auth)
 

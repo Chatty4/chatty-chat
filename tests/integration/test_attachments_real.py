@@ -170,7 +170,7 @@ async def test_attachments_of_deleted_messages_are_not_claimed(sessions):
         assert await AttachmentRepository(session).claim_unlabeled() is None
 
 
-async def search(sessions, word: str, channel_ids: list[uuid.UUID] | None = None) -> list:
+async def search(sessions, word: str | None, channel_ids: list[uuid.UUID] | None = None) -> list:
     async with sessions() as session:
         return await MessageRepository(session).search_attachments(
             channel_ids=channel_ids or [CHANNEL_ID],
@@ -211,3 +211,23 @@ async def test_search_attachments_highlights_a_match_in_the_file_name(sessions):
     [found] = await search(sessions, "report")
 
     assert found.highlight.startswith(f"{HIGHLIGHT_START}report{HIGHLIGHT_STOP}")
+
+
+async def test_without_a_query_all_files_newest_first(sessions):
+    # each message is its own transaction, so created_at (now()) grows from older to newer
+    older, newer, deleted = [await new_message(sessions, seq) for seq in (1, 2, 3)]
+    async with sessions.begin() as session:
+        repository = MessageRepository(session)
+        [old] = await repository.insert_attachments(
+            older.id, [attached_file("a.txt", "text/plain")]
+        )
+        [new] = await repository.insert_attachments(
+            newer.id, [attached_file("b.zip", "application/zip")]
+        )
+        await repository.insert_attachments(deleted.id, [attached_file()])
+        await repository.soft_delete_message(deleted.id)
+
+    found = await search(sessions, None)
+
+    assert [r.Attachment.file_id for r in found] == [new.file_id, old.file_id]  # unlabeled too
+    assert [r.highlight for r in found] == ["", ""]

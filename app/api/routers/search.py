@@ -38,7 +38,7 @@ async def search_attachments(
     user: CurrentUser,
     service: SearchServiceDep,
     team_id: uuid.UUID,
-    q: Annotated[str, Query(min_length=2, max_length=200)],
+    q: Annotated[str | None, Query(min_length=2, max_length=200)] = None,
     channel_id: Annotated[uuid.UUID | None, Query(alias="in")] = None,
     author_id: Annotated[uuid.UUID | None, Query(alias="from")] = None,
     before: AwareDatetime | None = None,

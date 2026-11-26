@@ -178,7 +178,7 @@ class SearchService:
         self,
         user: Memberships,
         team_id: uuid.UUID,
-        q: str,
+        q: str | None,
         channel_id: uuid.UUID | None,
         author_id: uuid.UUID | None,
         before: datetime | None,
