@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
 
@@ -99,3 +100,14 @@ class MessageHistoryResponse(BaseModel):
 
 class EditMessageRequest(BaseModel):
     body: str = Field(max_length=4000)
+
+
+@dataclass
+class MessageDraft:
+    """What send saves: from the request, or a copy of the forwarded message (D-20)."""
+
+    body: str
+    mentions: list[uuid.UUID]
+    file_ids: list[uuid.UUID]
+    reply_to_id: uuid.UUID | None = None
+    forwarded_from_id: uuid.UUID | None = None

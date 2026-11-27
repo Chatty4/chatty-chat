@@ -15,6 +15,7 @@ class ErrorCode(StrEnum):
     INVALID_FILE = "invalid_file"
     INVALID_CURSOR = "invalid_cursor"
     READ_RECEIPTS_UNAVAILABLE = "read_receipts_unavailable"
+    FORWARD_WRONG_TEAM = "forward_wrong_team"
 
     # 403
     NOT_A_MEMBER = "not_a_member"

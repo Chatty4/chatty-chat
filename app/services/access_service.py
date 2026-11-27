@@ -81,11 +81,14 @@ class AccessService:
         ]
         return user.model_copy(update={"teams": teams})
 
-    async def check_can_read(self, user: Memberships, channel_id: uuid.UUID) -> None:
-        if any(c.channel_id == channel_id for c in user.channels):
-            return
-        if any(channel_id in team.public_channel_ids for team in user.teams):
-            return
+    async def check_can_read(self, user: Memberships, channel_id: uuid.UUID) -> uuid.UUID:
+        """Raises unless the user can read the channel. Returns the channel's team."""
+        for joined in user.channels:
+            if joined.channel_id == channel_id:
+                return joined.team_id
+        for team in user.teams:
+            if channel_id in team.public_channel_ids:
+                return team.team_id
         # Not in the cached lists: the channel may be newer than them (a public channel created
         # after the cache was filled), or of a deleted team, which memberships leave out.
         channel = await self._core.get_channel(channel_id)
@@ -93,6 +96,7 @@ class AccessService:
             raise NotFound(ErrorCode.CHANNEL_NOT_FOUND)
         if not _can_read(user, channel):
             raise PermissionDenied(ErrorCode.CANNOT_READ_CHANNEL)
+        return channel.team_id
 
     def check_in_team(self, user: Memberships, team_id: uuid.UUID) -> None:
         if not any(team.team_id == team_id for team in user.teams):
