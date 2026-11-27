@@ -206,8 +206,6 @@ class MessageService:
         new (201) or a retry (200)."""
         self._check_send_request(data)
 
-        self._check_send_request(data)
-
         # Before the access check: a retry returns the saved message even if the channel was
         # archived since. It is the sender's own message, so nothing new is revealed.
         async with self._session.begin():  # ends the read, so the write can begin() its own
