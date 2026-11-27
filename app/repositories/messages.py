@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Row, exists, func, literal, select, tuple_, update
+from sqlalchemy import Row, Uuid, column, exists, func, literal, select, tuple_, update, values
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.exceptions import MessageAlreadySent
 from app.models import Attachment, Message
@@ -51,6 +52,7 @@ class MessageRepository:
         body: str,
         mentions: list[uuid.UUID],
         reply_to_id: uuid.UUID | None = None,
+        forwarded_from_id: uuid.UUID | None = None,
     ) -> Message:
         """Add the message and load what the database fills in (created_at). Raises
         MessageAlreadySent when another request with the same client_msg_id saved it first."""
@@ -62,6 +64,7 @@ class MessageRepository:
             body=body,
             mentions=mentions,
             reply_to_id=reply_to_id,
+            forwarded_from_id=forwarded_from_id,
         )
         self._session.add(message)
         try:
@@ -280,6 +283,22 @@ class MessageRepository:
             )
 
         return list((await self._session.execute(stmt)).all())
+
+    async def copy_labels(self, copies: dict[uuid.UUID, uuid.UUID]) -> None:
+        """Give each copied file (value) the labels and content of its source file (key), so the
+        labeler skips it. A source not labeled yet leaves its copy to the labeler."""
+        if not copies:
+            return
+        pairs = values(column("source_id", Uuid), column("copy_id", Uuid), name="pairs").data(
+            list(copies.items())
+        )
+        source = aliased(Attachment)
+        stmt = (
+            update(Attachment)
+            .where(Attachment.file_id == pairs.c.copy_id, source.file_id == pairs.c.source_id)
+            .values(labels=source.labels, content=source.content, labeled_at=source.labeled_at)
+        )
+        await self._session.execute(stmt)
 
     async def has_replies(self, message_id: uuid.UUID) -> bool:
         """True if a message replies to this one."""

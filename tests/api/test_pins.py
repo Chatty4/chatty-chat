@@ -101,6 +101,7 @@ async def test_get_lists_pins_with_the_message_object(client, auth, message):
         "mentions",
         "reactions",
         "pinned",
+        "forwarded",
         "edited_at",
         "deleted_at",
         "created_at",

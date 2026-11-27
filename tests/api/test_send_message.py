@@ -64,6 +64,7 @@ async def test_new_message_is_201_with_the_message_object(app, client, auth):
         "mentions",
         "reactions",
         "pinned",
+        "forwarded",
         "edited_at",
         "deleted_at",
         "created_at",
@@ -250,3 +251,36 @@ async def test_no_token_is_401(app, client):
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
+
+
+async def test_forward_is_201_marked_forwarded(app, client, auth):
+    room = channel(USER_ID)
+    source_room = room.model_copy(update={"channel_id": uuid.uuid4()})  # same team
+    source = saved_message(source_room.channel_id, OTHER_ID, uuid.uuid4())
+    use(app, room, FakeMessages(stored=[source]), channels=[source_room])
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(uuid.uuid4()), "forward_of": str(source.id)},
+        headers=auth,
+    )
+
+    assert response.status_code == 201
+    message = response.json()
+    assert (message["forwarded"], message["body"], message["mentions"]) == (True, "hi", [])
+    assert "forwarded_from_id" not in message
+
+
+async def test_forward_with_a_body_is_400(app, client, auth):
+    room = channel(USER_ID)
+    use(app, room)
+
+    response = await client.post(
+        url(room.channel_id),
+        json={"client_msg_id": str(uuid.uuid4()), "forward_of": str(uuid.uuid4()), "body": "hi"},
+        headers=auth,
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert (error["code"], error["fields"]) == ("validation_error", {"forward_of": "invalid"})

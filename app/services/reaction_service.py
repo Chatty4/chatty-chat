@@ -49,7 +49,7 @@ class ReactionService:
 
     async def add(self, user: Memberships, message_id: uuid.UUID, emoji: str) -> ReactionsResponse:
         """Add my reaction. Takes the next seq and sends reaction.added, only if it is new."""
-        message = await get_readable_message(
+        message, _ = await get_readable_message(
             self._session, self._messages, self._access, user, message_id
         )
         if message.deleted_at is not None:
@@ -102,7 +102,7 @@ class ReactionService:
         self, user: Memberships, message_id: uuid.UUID, emoji: str
     ) -> ReactionsResponse:
         """Remove my reaction. Takes the next seq and sends reaction.removed, only if I had it."""
-        message = await get_readable_message(
+        message, _ = await get_readable_message(
             self._session, self._messages, self._access, user, message_id
         )
         await self._access.get_writable_channel(user, message.channel_id)

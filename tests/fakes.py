@@ -68,8 +68,10 @@ def channel(
 
 
 class FakeCore:
-    """Stands in for CoreClient: returns what it was given, or raises `error`. attach returns
-    `attachments` or raises `attach_error`; attach and detach calls are recorded."""
+    """Stands in for CoreClient: returns what it was given, or raises `error`. get_channel finds
+    `channels` by id, else returns `channel`. attach returns `attachments` or raises
+    `attach_error`; copy returns `copies` or raises `copy_error`. attach, copy and detach calls
+    are recorded."""
 
     def __init__(
         self,
@@ -77,17 +79,24 @@ class FakeCore:
         channel: CoreChannel | None = None,
         error: Exception | None = None,
         *,
+        channels: list[CoreChannel] | None = None,
         attachments: list[CoreAttachment] | None = None,
         attach_error: Exception | None = None,
+        copies: list[CoreAttachment] | None = None,
+        copy_error: Exception | None = None,
         detach_error: Exception | None = None,
     ) -> None:
         self._memberships = memberships
         self._channel = channel
+        self._channels = {room.channel_id: room for room in channels or []}
         self._error = error
         self._attachments = attachments or []
         self._attach_error = attach_error
+        self._copies = copies or []
+        self._copy_error = copy_error
         self._detach_error = detach_error
         self.attach_calls: list[tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]] = []
+        self.copy_calls: list[tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]] = []
         self.detach_calls: list[list[uuid.UUID]] = []
 
     async def attach(
@@ -97,6 +106,14 @@ class FakeCore:
         if self._attach_error:
             raise self._attach_error
         return self._attachments
+
+    async def copy(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
+        self.copy_calls.append((user_id, channel_id, list(file_ids)))
+        if self._copy_error:
+            raise self._copy_error
+        return self._copies
 
     async def detach(self, file_ids: list[uuid.UUID]) -> None:
         self.detach_calls.append(list(file_ids))
@@ -111,7 +128,7 @@ class FakeCore:
     async def get_channel(self, channel_id: uuid.UUID) -> CoreChannel | None:
         if self._error:
             raise self._error
-        return self._channel
+        return self._channels.get(channel_id, self._channel)
 
 
 def saved_message(
@@ -212,6 +229,7 @@ class FakeMessages:
         self.inserted: list[Message] = []
         # message_id -> its files; tests can fill it to show a message with files
         self.attachments: dict[uuid.UUID, list[Attachment]] = {}
+        self.copied_labels: dict[uuid.UUID, uuid.UUID] = {}  # source file_id -> copy file_id
 
     async def get_message(self, message_id: uuid.UUID) -> Message | None:
         return self._stored.get(message_id)
@@ -280,6 +298,9 @@ class FakeMessages:
         ]
         self.attachments[message_id] = rows
         return rows
+
+    async def copy_labels(self, copies: dict[uuid.UUID, uuid.UUID]) -> None:
+        self.copied_labels.update(copies)
 
     async def list_attachments(
         self, message_ids: list[uuid.UUID]

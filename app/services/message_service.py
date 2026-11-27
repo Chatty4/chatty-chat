@@ -11,6 +11,7 @@ from app.clients.core import CoreClient
 from app.core.codes import ErrorCode
 from app.core.exceptions import (
     AppError,
+    BadRequest,
     Conflict,
     InvalidFile,
     MessageAlreadySent,
@@ -27,13 +28,14 @@ from app.repositories import (
     ReactionRepository,
     ReadStateRepository,
 )
-from app.schemas.core import CoreAttachment, Memberships
+from app.schemas.core import CoreAttachment, CoreChannel, Memberships
 from app.schemas.events import ChannelEvent, EventType
 from app.schemas.messages import (
     AttachmentResponse,
     AttachmentUrlResponse,
     AttachmentUrlsResponse,
     EditMessageRequest,
+    MessageDraft,
     MessageHistoryResponse,
     MessageResponse,
     ReactionResponse,
@@ -80,9 +82,10 @@ async def get_readable_message(
     access: AccessService,
     user: Memberships,
     message_id: uuid.UUID,
-) -> Message:
+) -> tuple[Message, uuid.UUID]:
     """
-    The message, if the user can read the channel. Otherwise 404, so nobody learns it exists.
+    The message and its channel's team, if the user can read the channel.
+    Otherwise 404, so nobody learns it exists.
     """
     async with session.begin():
         message = await messages.get_message(message_id)
@@ -91,10 +94,10 @@ async def get_readable_message(
         raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
 
     try:
-        await access.check_can_read(user, message.channel_id)
+        team_id = await access.check_can_read(user, message.channel_id)
     except (NotFound, PermissionDenied) as exc:
         raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
-    return message
+    return message, team_id
 
 
 def to_reaction_responses(rows: list[tuple[str, int, bool]]) -> list[ReactionResponse]:
@@ -149,6 +152,7 @@ def to_message_response(
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
+        forwarded=message.forwarded_from_id is not None,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
         created_at=message.created_at,
@@ -198,14 +202,9 @@ class MessageService:
     async def send(
         self, user: Memberships, channel_id: uuid.UUID, data: SendMessageRequest
     ) -> tuple[MessageResponse, bool]:
-        """Send a message. Returns it and whether it is new (201) or a retry (200)."""
-        if not data.body and not data.file_ids:
-            raise ValidationFailed(fields={"body": "required"})
-
-        if len(set(data.file_ids)) != len(data.file_ids):
-            raise ValidationFailed(
-                message="a file is in file_ids twice", fields={"file_ids": "invalid"}
-            )
+        """Send a message, or forward one with forward_of (D-20). Returns it and whether it is
+        new (201) or a retry (200)."""
+        self._check_send_request(data)
 
         # Before the access check: a retry returns the saved message even if the channel was
         # archived since. It is the sender's own message, so nothing new is revealed.
@@ -215,29 +214,23 @@ class MessageService:
                 return await self._retry(existing, user.user_id, channel_id), False
 
         channel = await self._access.get_writable_channel(user, channel_id)
-        mentions = extract_mentions(data.body, {member.user_id for member in channel.members})
-        if data.reply_to_id is not None:
-            await self._check_reply_target(channel_id, data.reply_to_id)  # before attach
+        if data.forward_of is not None:
+            draft = await self._forward_draft(user, channel, data.forward_of)
+        else:
+            draft = await self._message_draft(channel, data)
 
         # Before the transaction, so none is held during the call to chatty-core (D-03).
-        attached: list[CoreAttachment] = []
-        if data.file_ids:
-            try:
-                attached = await self._core.attach(user.user_id, channel_id, data.file_ids)
-            except InvalidFile as exc:
-                if exc.reason != "file_already_attached":
+        try:
+            attached = await self._take_files(user.user_id, channel_id, draft)
+        except InvalidFile as exc:
+            if exc.reason != "file_already_attached":
+                raise
+            # A concurent request with this client_msg_id may have attached them and saved.
+            async with self._session.begin():
+                saved = await self._messages.get_by_client_msg_id(user.user_id, data.client_msg_id)
+                if saved is None:
                     raise
-                # A concurent request with this client_msg_id may have attached them and saved.
-                async with self._session.begin():
-                    saved = await self._messages.get_by_client_msg_id(
-                        user.user_id, data.client_msg_id
-                    )
-                    if saved is None:
-                        raise
-                    return await self._retry(saved, user.user_id, channel_id), False
-
-            order = {file_id: index for index, file_id in enumerate(data.file_ids)}
-            attached.sort(key=lambda attachment: order[attachment.file_id])
+                return await self._retry(saved, user.user_id, channel_id), False
 
         try:
             async with self._session.begin():
@@ -247,15 +240,21 @@ class MessageService:
                     author_id=user.user_id,
                     seq=seq,
                     client_msg_id=data.client_msg_id,
-                    body=data.body,
-                    mentions=mentions,
-                    reply_to_id=data.reply_to_id,
+                    body=draft.body,
+                    mentions=draft.mentions,
+                    reply_to_id=draft.reply_to_id,
+                    forwarded_from_id=draft.forwarded_from_id,
                 )
                 files = await self._messages.insert_attachments(message.id, attached)
+                if draft.forwarded_from_id is not None:
+                    await self._messages.copy_labels(
+                        dict(zip(draft.file_ids, [file.file_id for file in attached], strict=True))
+                    )
+
                 # Read under the channel's counter lock, which a delete also takes: the quote
                 # is either from before the delete, which then clears it, or already empty.
                 replied = await self._messages.get_messages(
-                    [data.reply_to_id] if data.reply_to_id else []
+                    [draft.reply_to_id] if draft.reply_to_id else []
                 )
                 response = to_message_response(message, attachments=files, replied=replied)
                 payload = {"message": response.model_dump(mode="json")}
@@ -300,6 +299,25 @@ class MessageService:
             await self._bus.send_read(channel_id, user.user_id, position.last_read_seq)
 
         return response, True
+
+    @staticmethod
+    def _check_send_request(data: SendMessageRequest) -> None:
+        """The checks that need nothing from the database or chatty-core."""
+        if data.forward_of is not None:
+            if data.body or data.file_ids or data.reply_to_id is not None:
+                raise ValidationFailed(
+                    message="forward_of can't come with body, file_ids or reply_to_id",
+                    fields={"forward_of": "invalid"},
+                )
+            return
+
+        if not data.body and not data.file_ids:
+            raise ValidationFailed(fields={"body": "required"})
+
+        if len(set(data.file_ids)) != len(data.file_ids):
+            raise ValidationFailed(
+                message="a file is in file_ids twice", fields={"file_ids": "invalid"}
+            )
 
     async def _release_unsaved(
         self, user_id: uuid.UUID, client_msg_id: uuid.UUID, attached: list[CoreAttachment]
@@ -348,6 +366,57 @@ class MessageService:
             )
         if replied.deleted_at is not None:
             raise Conflict(ErrorCode.MESSAGE_DELETED, "The message you replied to was deleted")
+
+    async def _message_draft(self, channel: CoreChannel, data: SendMessageRequest) -> MessageDraft:
+        if data.reply_to_id is not None:
+            await self._check_reply_target(channel.channel_id, data.reply_to_id)  # before attach
+        return MessageDraft(
+            body=data.body,
+            mentions=extract_mentions(data.body, {member.user_id for member in channel.members}),
+            file_ids=data.file_ids,
+            reply_to_id=data.reply_to_id,
+        )
+
+    async def _forward_draft(
+        self, user: Memberships, channel: CoreChannel, message_id: uuid.UUID
+    ) -> MessageDraft:
+        """A copy of a message the user can read, in the same team (D-20). No mentions, so
+        nobody is notified again, and no reply."""
+        source, team_id = await self._get_readable_message(user, message_id)
+        if source.deleted_at is not None:
+            raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
+        if team_id != channel.team_id:
+            raise BadRequest(
+                ErrorCode.FORWARD_WRONG_TEAM, "A message can only be forwarded in its team"
+            )
+
+        async with self._session.begin():
+            files = await self._messages.list_attachments([source.id])
+        return MessageDraft(
+            body=source.body,
+            mentions=[],
+            file_ids=[file.file_id for file in files.get(source.id, [])],
+            forwarded_from_id=source.id,
+        )
+
+    async def _take_files(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, draft: MessageDraft
+    ) -> list[CoreAttachment]:
+        """The new message's files, in the order of draft.file_ids: the sent files attached
+        (D-03), or the forwarded message's files copied (D-20)."""
+        if not draft.file_ids:
+            return []
+
+        if draft.forwarded_from_id is not None:
+            try:
+                return await self._core.copy(user_id, channel_id, draft.file_ids)  # in order
+            except InvalidFile as exc:  # the forwarded message was deleted after the check
+                raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found") from exc
+
+        attached = await self._core.attach(user_id, channel_id, draft.file_ids)
+        order = {file_id: index for index, file_id in enumerate(draft.file_ids)}
+        attached.sort(key=lambda attachment: order[attachment.file_id])  # may come in any order
+        return attached
 
     async def list_history(
         self,
@@ -458,7 +527,7 @@ class MessageService:
         self, user: Memberships, message_id: uuid.UUID, data: EditMessageRequest
     ) -> MessageResponse:
         """Edit the body of my message. Takes the next seq and sends message.edited."""
-        message = await self._get_readable_message(user, message_id)
+        message, _ = await self._get_readable_message(user, message_id)
         if message.author_id != user.user_id:
             raise PermissionDenied(ErrorCode.NOT_AUTHOR, "You can only edit your own messages")
         if message.deleted_at is not None:
@@ -502,14 +571,16 @@ class MessageService:
         )
         return response
 
-    async def _get_readable_message(self, user: Memberships, message_id: uuid.UUID) -> Message:
+    async def _get_readable_message(
+        self, user: Memberships, message_id: uuid.UUID
+    ) -> tuple[Message, uuid.UUID]:
         return await get_readable_message(
             self._session, self._messages, self._access, user, message_id
         )
 
     async def delete(self, user: Memberships, message_id: uuid.UUID) -> None:
         """Soft-delete a message (D-05). Takes the next seq and sends message.deleted."""
-        message = await self._get_readable_message(user, message_id)
+        message, _ = await self._get_readable_message(user, message_id)
         await self._access.get_channel_for_delete(user, message.channel_id, message.author_id)
         if message.deleted_at is not None:
             return  # already deleted: 204, no event
@@ -567,7 +638,7 @@ class MessageService:
         Download URLs for the files of a message, in the order they were sent (D-02).
         404 if it doesn't exist, the user can't read it's channel, or it was deleted.
         """
-        message = await self._get_readable_message(user, message_id)
+        message, _ = await self._get_readable_message(user, message_id)
         if message.deleted_at is not None:
             raise NotFound(ErrorCode.MESSAGE_NOT_FOUND, "Message not found")
 

@@ -36,6 +36,7 @@ FILE_ERRORS = {
     "wrong_team",
     "file_not_ready",
     "file_already_attached",
+    "file_not_attached",
 }
 
 
@@ -76,7 +77,19 @@ class CoreClient:
         """Attach all the files of a message, or none (D-03). Raises InvalidFile for a file
         chatty-core refuses. On ServiceUnavailable the files may or may not be attached, so
         nothing may be undone."""
-        path = "/internal/files/attach"
+        return await self._post_files("/internal/files/attach", user_id, channel_id, file_ids)
+
+    async def copy(
+        self, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
+        """Copy the files of a forwarded message into new attached files of user_id, in the order
+        of file_ids (D-20). Raises InvalidFile for a file chatty-core refuses. On
+        ServiceUnavailable copies may exist, so nothing may be undone."""
+        return await self._post_files("/internal/files/copy", user_id, channel_id, file_ids)
+
+    async def _post_files(
+        self, path: str, user_id: uuid.UUID, channel_id: uuid.UUID, file_ids: list[uuid.UUID]
+    ) -> list[CoreAttachment]:
         body = {
             "user_id": str(user_id),
             "channel_id": str(channel_id),
