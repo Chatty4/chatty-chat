@@ -48,6 +48,9 @@ class Message(Base):
     seq: Mapped[int] = mapped_column(BigInteger)
     client_msg_id: Mapped[uuid.UUID]
     reply_to_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
+    forwarded_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL")
+    )
     body: Mapped[str] = mapped_column(Text)
     mentions: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), server_default=text("'{}'"))
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
