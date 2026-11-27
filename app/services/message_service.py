@@ -149,6 +149,7 @@ def to_message_response(
         mentions=list(message.mentions),
         reactions=[] if message.deleted_at else to_reaction_responses(reactions or []),
         pinned=pinned,
+        forwarded=message.forwarded_from_id is not None,
         edited_at=message.edited_at,
         deleted_at=message.deleted_at,
         created_at=message.created_at,

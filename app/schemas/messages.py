@@ -24,6 +24,7 @@ class SendMessageRequest(BaseModel):
     body: str = Field("", max_length=4000)
     file_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10)
     reply_to_id: uuid.UUID | None = None
+    forward_of: uuid.UUID | None = None  # D-20: then body, file_ids and reply_to_id stay empty
 
 
 class AttachmentResponse(BaseModel):
@@ -83,6 +84,7 @@ class MessageResponse(BaseModel):
     mentions: list[uuid.UUID]
     reactions: list[ReactionResponse]
     pinned: bool
+    forwarded: bool  # D-20: never says from where
     edited_at: datetime | None
     deleted_at: datetime | None
     created_at: datetime

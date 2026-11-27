@@ -64,6 +64,7 @@ async def test_new_message_is_201_with_the_message_object(app, client, auth):
         "mentions",
         "reactions",
         "pinned",
+        "forwarded",
         "edited_at",
         "deleted_at",
         "created_at",
